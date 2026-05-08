@@ -509,13 +509,101 @@ rm -rf "$MIGRATE_DIR"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "${BOLD}══ SECTION 9: Analytics (optional) ════════════════════════════════${RESET}"
+echo "${BOLD}══ SECTION 9: New features ═════════════════════════════════════════${RESET}"
+
+# Create a custom template with new question types
+cat > "$WORK_DIR/tpl_new.json" <<'EOF'
+{
+  "id": "tpl_new",
+  "title": "New Types",
+  "description": "Testing new question types",
+  "tags": ["test"],
+  "created_at": "2026-01-01T00:00:00Z",
+  "questions": [
+    {"type": "rating", "id": "score",  "prompt": "Rate us", "min_val": 1, "max_val": 5},
+    {"type": "email",  "id": "email",  "prompt": "Your email"},
+    {"type": "single_select", "id": "priority", "prompt": "Priority",
+     "options": ["low","medium","high","critical"]},
+    {"type": "free_text", "id": "notes", "prompt": "Notes", "required": false,
+     "hint": "Optional feedback"}
+  ]
+}
+EOF
+
+check "template create-from-file with rating+email+required=false" 0 "tpl_new v1" \
+    "$QST" template create-from-file tpl_new.json
+
+check "template show (new types visible)" 0 "rating" \
+    "$QST" template show tpl_new
+
+# Fill with valid rating and email
+cat > "$WORK_DIR/new_answers.json" <<'EOF'
+{
+  "score": 4,
+  "email": "alice@example.com",
+  "priority": "high"
+}
+EOF
+
+check_capture "answer fill tpl_new (rating+email, notes omitted — required=false)" 0 "submitted questionnaire" \
+    "$QST" answer fill tpl_new new_answers.json --respondent user_new
+NEW_QN_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< "$LAST_OUTPUT" | head -1)
+
+# answer validate (dry-run)
+check "answer validate valid answers → ok" 0 "" \
+    "$QST" answer validate tpl_new new_answers.json
+
+cat > "$WORK_DIR/bad_rating.json" <<'EOF'
+{ "score": 99, "email": "alice@example.com", "priority": "high" }
+EOF
+
+check "answer validate bad rating → exit 1" 1 "" \
+    "$QST" answer validate tpl_new bad_rating.json
+
+# template stats
+check "template stats (counts)" 0 "submissions:" \
+    "$QST" template stats tpl_new
+
+# template duplicate
+check_capture "template duplicate → new id" 0 "tpl_new_copy v1" \
+    "$QST" template duplicate tpl_new --new-id tpl_new_copy
+
+check "duplicate template is listed" 0 "tpl_new_copy" \
+    "$QST" template list
+
+# archive + list --archived
+check "qst list --archived shows archived questionnaires" 0 "" \
+    "$QST" list --archived
+
+# webhook add / list / delete
+check_capture "webhook add" 0 "" \
+    "$QST" webhook add "http://localhost:19999/hook" --events "questionnaire.submit"
+HOOK_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< "$LAST_OUTPUT" | head -1)
+
+check "webhook list shows added hook" 0 "localhost:19999" \
+    "$QST" webhook list
+
+[[ -n "$HOOK_ID" ]] && check "webhook delete" 0 "" \
+    "$QST" webhook delete "$HOOK_ID"
+
+check "webhook list empty after delete" 0 "" \
+    "$QST" webhook list
+
+# qst list with --include-drafts and pagination sanity
+check "qst list -t tpl_new shows submitted" 0 "submitted" \
+    "$QST" list -t tpl_new
+
+
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "${BOLD}══ SECTION 10: Analytics (optional) ═══════════════════════════════${RESET}"
 
 # Analytics extra may not be installed — treat exit 2 as acceptable
 TOTAL=$(( TOTAL + 1 ))
 echo ""
 echo "${BOLD}[$TOTAL] analytics cluster favorite_moment (optional)${RESET}"
 echo "  cmd: $QST analytics cluster favorite_moment"
+# (section number now 10)
 
 analytic_out=$(cd "$WORK_DIR" && "$QST" analytics cluster favorite_moment 2>&1) || analytic_rc=$?
 analytic_rc=${analytic_rc:-0}

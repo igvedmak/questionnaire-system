@@ -23,8 +23,12 @@ Design rules followed throughout:
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import uuid as uuid_lib
 import zipfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -35,9 +39,11 @@ from sqlalchemy import (
     create_engine,
     delete,
     exists,
+    func,
     not_,
     or_,
     select,
+    text,
 )
 from sqlalchemy.orm import Session
 
@@ -62,10 +68,12 @@ from ..domain.types import (
     AnswerValue,
     BooleanAnswer,
     DateAnswer,
+    EmailAnswer,
     FreeTextAnswer,
     MultiSelectAnswer,
     NumberAnswer,
     Questionnaire,
+    RatingAnswer,
     SingleSelectAnswer,
     Template,
 )
@@ -77,8 +85,11 @@ from .models import (
     QuestionnaireRow,
     TemplateCurrentRow,
     TemplateRow,
+    WebhookRow,
 )
 
+
+_log = logging.getLogger(__name__)
 
 # --- TypeAdapters (built once, reused) ----------------------------------
 
@@ -87,7 +98,26 @@ _ANSWER_ADAPTER = TypeAdapter(AnswerValue)
 
 
 class StoreError(Exception):
-    pass
+    """Raised for store-level errors (not found, state violations, etc.)."""
+
+
+@dataclass
+class WebhookConfig:
+    id: str
+    url: str
+    events: list[str]  # e.g. ["questionnaire.submit", "gdpr.delete"]
+    secret: str | None
+    created_at: str
+    active: bool
+
+
+@dataclass
+class TemplateStats:
+    template_id: str
+    version: int
+    total_submissions: int
+    total_drafts: int
+    answer_counts: dict[str, int]  # question_id -> count of non-null answers
 
 
 class SubmissionLockedError(StoreError):
@@ -98,6 +128,12 @@ def default_db_url() -> str:
     p = Path("data") / "db.sqlite"
     p.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{p.resolve()}"
+
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class SqlStore:
@@ -209,6 +245,8 @@ class SqlStore:
                 created_at=qn.created_at,
                 submitted_at=qn.submitted_at,
                 respondent_id=qn.respondent_id,
+                expires_at=qn.expires_at,
+                archived_at=qn.archived_at,
             )
             s.merge(row)
 
@@ -252,6 +290,21 @@ class SqlStore:
                 raise SubmissionLockedError(
                     f"questionnaire {questionnaire_id} is submitted; answers are frozen"
                 )
+            if qn_row.archived_at is not None:
+                raise SubmissionLockedError(
+                    f"questionnaire {questionnaire_id} is archived; answers are frozen"
+                )
+            if qn_row.expires_at is not None:
+                from ..domain.types import Questionnaire as _Qn
+                _qn = _Qn(
+                    id=qn_row.id, template_id=qn_row.template_id,
+                    template_version=qn_row.template_version,
+                    created_at=qn_row.created_at, expires_at=qn_row.expires_at,
+                )
+                if _qn.is_expired:
+                    raise SubmissionLockedError(
+                        f"questionnaire {questionnaire_id} has expired"
+                    )
 
             template = self._get_template_in_session(
                 s, qn_row.template_id, qn_row.template_version,
@@ -307,6 +360,21 @@ class SqlStore:
                 raise SubmissionLockedError(
                     f"questionnaire {questionnaire_id} already submitted"
                 )
+            if qn_row.archived_at is not None:
+                raise SubmissionLockedError(
+                    f"questionnaire {questionnaire_id} is archived"
+                )
+            if qn_row.expires_at is not None:
+                from ..domain.types import Questionnaire as _Qn
+                _qn = _Qn(
+                    id=qn_row.id, template_id=qn_row.template_id,
+                    template_version=qn_row.template_version,
+                    created_at=qn_row.created_at, expires_at=qn_row.expires_at,
+                )
+                if _qn.is_expired:
+                    raise SubmissionLockedError(
+                        f"questionnaire {questionnaire_id} has expired"
+                    )
             qn_row.submitted_at = now_iso()
             self._append_audit_in_session(s, AuditEvent(
                 ts=now_iso(),
@@ -316,6 +384,7 @@ class SqlStore:
                 target_id=questionnaire_id,
                 payload={},
             ))
+        self.fire_webhooks("questionnaire.submit", {"id": questionnaire_id})
 
     def get_questionnaire(self, questionnaire_id: str) -> Questionnaire | None:
         with self.session() as s:
@@ -331,6 +400,8 @@ class SqlStore:
                 submitted_at=row.submitted_at,
                 respondent_id=row.respondent_id,
                 answers=answers,
+                expires_at=row.expires_at,
+                archived_at=row.archived_at,
             )
 
     def query_questionnaires(
@@ -338,6 +409,7 @@ class SqlStore:
         filters: list[Filter],
         *,
         include_drafts: bool = False,
+        include_archived: bool = False,
     ) -> list[Questionnaire]:
         """SQL-pushdown filtering. Each include/exclude becomes an EXISTS clause.
 
@@ -349,6 +421,8 @@ class SqlStore:
             stmt = select(QuestionnaireRow)
             if not include_drafts:
                 stmt = stmt.where(QuestionnaireRow.submitted_at.isnot(None))
+            if not include_archived:
+                stmt = stmt.where(QuestionnaireRow.archived_at.is_(None))
             for f in filters:
                 stmt = stmt.where(_filter_to_clause(f))
             stmt = stmt.order_by(QuestionnaireRow.created_at)
@@ -365,14 +439,60 @@ class SqlStore:
                     submitted_at=row.submitted_at,
                     respondent_id=row.respondent_id,
                     answers=answers,
+                    expires_at=row.expires_at,
+                    archived_at=row.archived_at,
                 ))
             return out
+
+    def query_questionnaires_page(
+        self,
+        filters: list[Filter],
+        *,
+        include_drafts: bool = False,
+        include_archived: bool = False,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[Questionnaire], int]:
+        """Returns (items, total_count) with pagination."""
+        with self.session() as s:
+            base_stmt = select(QuestionnaireRow)
+            if not include_drafts:
+                base_stmt = base_stmt.where(QuestionnaireRow.submitted_at.isnot(None))
+            if not include_archived:
+                base_stmt = base_stmt.where(QuestionnaireRow.archived_at.is_(None))
+            for f in filters:
+                base_stmt = base_stmt.where(_filter_to_clause(f))
+
+            count_stmt = select(func.count()).select_from(base_stmt.subquery())
+            total = s.execute(count_stmt).scalar_one()
+
+            paged_stmt = base_stmt.order_by(QuestionnaireRow.created_at).offset(
+                (page - 1) * page_size
+            ).limit(page_size)
+
+            qn_rows = s.execute(paged_stmt).scalars().all()
+            out: list[Questionnaire] = []
+            for row in qn_rows:
+                answers = self._load_answers(s, row.id)
+                out.append(Questionnaire(
+                    id=row.id,
+                    template_id=row.template_id,
+                    template_version=row.template_version,
+                    created_at=row.created_at,
+                    submitted_at=row.submitted_at,
+                    respondent_id=row.respondent_id,
+                    answers=answers,
+                    expires_at=row.expires_at,
+                    archived_at=row.archived_at,
+                ))
+            return out, total
 
     def stream_query_for_export(
         self,
         filters: list[Filter],
         *,
         include_drafts: bool = False,
+        include_archived: bool = False,
         chunk_size: int = 500,
     ) -> Iterator[Questionnaire]:
         """Memory-bounded variant for CSV export; yields one Questionnaire at a time."""
@@ -380,6 +500,8 @@ class SqlStore:
             stmt = select(QuestionnaireRow.id)
             if not include_drafts:
                 stmt = stmt.where(QuestionnaireRow.submitted_at.isnot(None))
+            if not include_archived:
+                stmt = stmt.where(QuestionnaireRow.archived_at.is_(None))
             for f in filters:
                 stmt = stmt.where(_filter_to_clause(f))
             stmt = stmt.order_by(QuestionnaireRow.created_at).execution_options(
@@ -495,7 +617,8 @@ class SqlStore:
                 target_id=respondent_id,
                 payload={"deleted_questionnaire_count": n, "ids": qn_ids},
             ))
-            return n
+        self.fire_webhooks("gdpr.delete", {"respondent_id": respondent_id})
+        return n
 
     # --- Embeddings ------------------------------------------------------
 
@@ -542,6 +665,168 @@ class SqlStore:
                 elif r.value_text is not None:
                     out.append((r.questionnaire_id, r.value_text))
         return out
+
+    # --- Archive ---------------------------------------------------------
+
+    def archive_questionnaire(self, qid: str, actor: str | None = None) -> None:
+        """Soft-deletes a questionnaire. Archived questionnaires are hidden from normal queries."""
+        with Session(self.engine) as sess:
+            row = sess.get(QuestionnaireRow, qid)
+            if row is None:
+                raise StoreError(f"questionnaire {qid!r} not found")
+            row.archived_at = _now_iso()
+            self._append_audit_in_session(sess, AuditEvent(
+                ts=now_iso(),
+                actor=actor,
+                action="questionnaire.archive",
+                target_type="questionnaire",
+                target_id=qid,
+                payload={},
+            ))
+            sess.commit()
+
+    # --- Template stats --------------------------------------------------
+
+    def get_template_stats(self, template_id: str) -> TemplateStats | None:
+        """Return submission/draft counts and per-question answer counts."""
+        with self.session() as s:
+            cur = s.get(TemplateCurrentRow, template_id)
+            if cur is None:
+                return None
+            version = cur.version
+
+            total_submissions = s.execute(
+                select(func.count()).where(
+                    and_(
+                        QuestionnaireRow.template_id == template_id,
+                        QuestionnaireRow.submitted_at.isnot(None),
+                        QuestionnaireRow.archived_at.is_(None),
+                    )
+                )
+            ).scalar_one()
+
+            total_drafts = s.execute(
+                select(func.count()).where(
+                    and_(
+                        QuestionnaireRow.template_id == template_id,
+                        QuestionnaireRow.submitted_at.is_(None),
+                        QuestionnaireRow.archived_at.is_(None),
+                    )
+                )
+            ).scalar_one()
+
+            # Count non-null answers per question_id for this template.
+            qn_ids_stmt = select(QuestionnaireRow.id).where(
+                QuestionnaireRow.template_id == template_id
+            )
+            answer_rows = s.execute(
+                select(AnswerRow.question_id, func.count().label("cnt")).where(
+                    AnswerRow.questionnaire_id.in_(qn_ids_stmt)
+                ).group_by(AnswerRow.question_id)
+            ).all()
+            answer_counts = {r.question_id: r.cnt for r in answer_rows}
+
+            return TemplateStats(
+                template_id=template_id,
+                version=version,
+                total_submissions=total_submissions,
+                total_drafts=total_drafts,
+                answer_counts=answer_counts,
+            )
+
+    # --- Duplicate template ----------------------------------------------
+
+    def duplicate_template(
+        self,
+        template_id: str,
+        new_id: str | None = None,
+        actor: str | None = None,
+    ) -> Template:
+        """Creates a copy of a template with a new id (or auto-generated uuid)."""
+        tpl = self.get_template(template_id)
+        if tpl is None:
+            raise StoreError(f"template {template_id!r} not found")
+        copy = tpl.model_copy(update={
+            "id": new_id or str(uuid_lib.uuid4()),
+            "version": 1,
+            "created_at": _now_iso(),
+        })
+        return self.save_template(copy, actor=actor)
+
+    # --- Webhooks --------------------------------------------------------
+
+    def save_webhook(self, webhook: WebhookConfig) -> WebhookConfig:
+        """Insert or update a webhook configuration."""
+        with self.session() as s:
+            s.merge(WebhookRow(
+                id=webhook.id,
+                url=webhook.url,
+                events=json.dumps(webhook.events),
+                secret=webhook.secret,
+                created_at=webhook.created_at,
+                active=webhook.active,
+            ))
+        return webhook
+
+    def list_webhooks(self) -> list[WebhookConfig]:
+        with self.session() as s:
+            rows = s.execute(select(WebhookRow)).scalars().all()
+            return [
+                WebhookConfig(
+                    id=r.id,
+                    url=r.url,
+                    events=json.loads(r.events),
+                    secret=r.secret,
+                    created_at=r.created_at,
+                    active=r.active,
+                )
+                for r in rows
+            ]
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        with self.session() as s:
+            row = s.get(WebhookRow, webhook_id)
+            if row is None:
+                raise StoreError(f"webhook {webhook_id!r} not found")
+            s.delete(row)
+
+    def fire_webhooks(self, event: str, payload: dict) -> None:
+        """Fire-and-forget HTTP POST to all active webhooks registered for this event.
+        Uses threading to avoid blocking. Failures are logged but not raised."""
+        try:
+            webhooks = self.list_webhooks()
+        except Exception:
+            return
+        active = [w for w in webhooks if w.active and event in w.events]
+        if not active:
+            return
+
+        from ..config import settings as _settings
+
+        def _send(wh: WebhookConfig) -> None:
+            try:
+                import hashlib
+                import hmac
+                import urllib.request
+                body = json.dumps({"event": event, "payload": payload}).encode()
+                req = urllib.request.Request(
+                    wh.url,
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                if wh.secret:
+                    sig = hmac.new(
+                        wh.secret.encode(), body, hashlib.sha256
+                    ).hexdigest()
+                    req.add_header("X-Webhook-Signature", sig)
+                with urllib.request.urlopen(req, timeout=_settings.webhook_timeout_s):
+                    pass
+            except Exception as exc:
+                _log.warning("webhook %s failed for event %r: %s", wh.url, event, exc)
+
+        for webhook in active:
+            threading.Thread(target=_send, args=(webhook,), daemon=True).start()
 
     # --- Internal --------------------------------------------------------
 
@@ -654,6 +939,12 @@ def _answer_to_rows(
     if isinstance(ans, NumberAnswer):
         return [AnswerRow(**base, option_index=0, value_num=float(ans.value))]
 
+    if isinstance(ans, RatingAnswer):
+        return [AnswerRow(**base, option_index=0, value_num=float(ans.value))]
+
+    if isinstance(ans, EmailAnswer):
+        return [AnswerRow(**base, option_index=0, value_text=ans.value)]
+
     raise StoreError(f"unhandled answer type: {ans.type}")
 
 
@@ -677,4 +968,8 @@ def _rows_to_answer(rows: list[AnswerRow]) -> AnswerValue:
         return FreeTextAnswer(value=r.value_text or "")
     if t == "number":
         return NumberAnswer(value=float(rows[0].value_num or 0.0))
+    if t == "rating":
+        return RatingAnswer(value=int(rows[0].value_num or 0))
+    if t == "email":
+        return EmailAnswer(value=rows[0].value_text or "")
     raise StoreError(f"unknown answer type in DB: {t}")

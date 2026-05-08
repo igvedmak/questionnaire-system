@@ -31,6 +31,10 @@ def list_cmd(
         False, "--include-drafts",
         help="Include draft (unsubmitted) questionnaires in the result.",
     ),
+    archived: bool = typer.Option(
+        False, "--archived",
+        help="Include archived (soft-deleted) questionnaires in the result.",
+    ),
 ):
     """List answered questionnaires, optionally filtered. AND-combined."""
     store = default_store()
@@ -41,7 +45,9 @@ def list_cmd(
         typer.echo(f"invalid filter: {e}", err=True)
         raise typer.Exit(code=2)
 
-    matches = store.query_questionnaires(filters, include_drafts=include_drafts)
+    matches = store.query_questionnaires(
+        filters, include_drafts=include_drafts, include_archived=archived
+    )
     if not matches:
         typer.echo("(no matches)")
         return

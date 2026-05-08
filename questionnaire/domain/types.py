@@ -17,6 +17,7 @@ expressions internally.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -66,6 +67,10 @@ class _BaseQuestion(BaseModel):
     # for free-text answers in this round; reserved on other types for
     # forward compatibility.
     pii: bool = False
+    # If False, the question can be skipped on submission.
+    required: bool = True
+    # Optional helper text shown below the prompt in the UI.
+    hint: str | None = None
 
 
 class BooleanQuestion(_BaseQuestion):
@@ -103,6 +108,18 @@ class NumberQuestion(_BaseQuestion):
     follow_ups: list[ExprFollowUp] = Field(default_factory=list)
 
 
+class RatingQuestion(_BaseQuestion):
+    type: Literal["rating"] = "rating"
+    min_val: int = 1
+    max_val: int = 5
+    min_label: str | None = None
+    max_label: str | None = None
+
+
+class EmailQuestion(_BaseQuestion):
+    type: Literal["email"] = "email"
+
+
 Question = Annotated[
     Union[
         BooleanQuestion,
@@ -111,6 +128,8 @@ Question = Annotated[
         DateQuestion,
         FreeTextQuestion,
         NumberQuestion,
+        RatingQuestion,
+        EmailQuestion,
     ],
     Field(discriminator="type"),
 ]
@@ -154,6 +173,18 @@ class NumberAnswer(BaseModel):
     value: float
 
 
+class RatingAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["rating"] = "rating"
+    value: int
+
+
+class EmailAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["email"] = "email"
+    value: str
+
+
 AnswerValue = Annotated[
     Union[
         BooleanAnswer,
@@ -162,6 +193,8 @@ AnswerValue = Annotated[
         DateAnswer,
         FreeTextAnswer,
         NumberAnswer,
+        RatingAnswer,
+        EmailAnswer,
     ],
     Field(discriminator="type"),
 ]
@@ -177,6 +210,8 @@ class Template(BaseModel):
     created_at: str
     # Versioning. New templates start at version 1; subsequent edits append.
     version: int = 1
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class Questionnaire(BaseModel):
@@ -189,10 +224,28 @@ class Questionnaire(BaseModel):
     # Optional respondent identifier for GDPR export/delete.
     respondent_id: str | None = None
     answers: dict[str, AnswerValue] = Field(default_factory=dict)
+    # ISO-8601 timestamp after which no more answers are accepted.
+    expires_at: str | None = None
+    # Set when archived (soft-delete); once set the questionnaire is hidden.
+    archived_at: str | None = None
 
     @property
     def is_submitted(self) -> bool:
         return self.submitted_at is not None
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
+
+    @property
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        try:
+            expiry = datetime.fromisoformat(self.expires_at.replace("Z", "+00:00"))
+            return datetime.now(timezone.utc) > expiry
+        except ValueError:
+            return False
 
 
 class Database(BaseModel):

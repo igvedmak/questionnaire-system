@@ -9,6 +9,7 @@ description = "Questionnaire engine: templates, instances, answering, expression
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
+    "pydantic-settings>=2.0",
     "typer>=0.12",
     "questionary>=2.0",
     "sqlalchemy>=2.0",

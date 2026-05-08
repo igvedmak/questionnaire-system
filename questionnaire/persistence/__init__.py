@@ -4,12 +4,22 @@
 migration source.
 """
 
-from .sql_store import SqlStore, SubmissionLockedError, default_db_url
+from .sql_store import (
+    SqlStore,
+    StoreError,
+    SubmissionLockedError,
+    TemplateStats,
+    WebhookConfig,
+    default_db_url,
+)
 from .store import JsonStore, default_db_path
 
 __all__ = [
     "SqlStore",
+    "StoreError",
     "SubmissionLockedError",
+    "TemplateStats",
+    "WebhookConfig",
     "default_db_url",
     "JsonStore",
     "default_db_path",

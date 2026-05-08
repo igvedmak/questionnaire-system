@@ -14,6 +14,7 @@ import abc
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ..config import settings
 from .expression import collect_var_references
 from .flow import resolve_active_questions
 from .types import (
@@ -21,12 +22,17 @@ from .types import (
     BoolFollowUp,
     BooleanQuestion,
     DateAnswer,
+    EmailAnswer,
+    EmailQuestion,
     ExprFollowUp,
     MultiSelectAnswer,
     MultiSelectQuestion,
     NumberAnswer,
     NumberQuestion,
+    Questionnaire,
     Question,
+    RatingAnswer,
+    RatingQuestion,
     SelectFollowUp,
     SingleSelectAnswer,
     SingleSelectQuestion,
@@ -186,7 +192,20 @@ def validate_for_submission(
     active = resolve_active_questions(template.questions, answers)
     for q in active:
         if q.id not in answers:
+            # Skip if the question is explicitly optional.
+            if not getattr(q, "required", True):
+                continue
             result.add("missing answer for active question", q.id)
+    return result
+
+
+def validate_expiry(qn: Questionnaire) -> ValidationResult:
+    """Returns error if questionnaire has expired or is archived."""
+    result = ValidationResult()
+    if qn.is_archived:
+        result.add("questionnaire is archived")
+    if qn.is_expired:
+        result.add("questionnaire has expired")
     return result
 
 
@@ -243,7 +262,11 @@ class _DateValidator(AnswerValidator):
 
 class _FreeTextValidator(AnswerValidator):
     def check(self, q: Question, ans: AnswerValue) -> str | None:
-        del q, ans
+        del q
+        from .types import FreeTextAnswer
+        assert isinstance(ans, FreeTextAnswer)
+        if len(ans.value) > settings.max_free_text_length:
+            return f"free-text exceeds max length of {settings.max_free_text_length} characters"
         return None
 
 
@@ -259,6 +282,24 @@ class _NumberValidator(AnswerValidator):
         return None
 
 
+class _RatingValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        assert isinstance(q, RatingQuestion) and isinstance(ans, RatingAnswer)
+        if not (q.min_val <= ans.value <= q.max_val):
+            return f"rating {ans.value} outside range [{q.min_val}, {q.max_val}]"
+        return None
+
+
+class _EmailValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        del q
+        assert isinstance(ans, EmailAnswer)
+        import re
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", ans.value):
+            return f"invalid email address: {ans.value!r}"
+        return None
+
+
 _VALIDATORS: dict[str, AnswerValidator] = {
     "boolean": _BooleanValidator(),
     "single_select": _SingleSelectValidator(),
@@ -266,6 +307,8 @@ _VALIDATORS: dict[str, AnswerValidator] = {
     "date": _DateValidator(),
     "free_text": _FreeTextValidator(),
     "number": _NumberValidator(),
+    "rating": _RatingValidator(),
+    "email": _EmailValidator(),
 }
 
 

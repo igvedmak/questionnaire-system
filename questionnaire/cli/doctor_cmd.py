@@ -17,6 +17,8 @@ Sections
 9.  Migration              — JSON → SQLite fidelity
 10. HTTP API               — all endpoints, success + error paths
 11. Analytics (optional)   — HDBSCAN clustering
+12. New features           — rating/email types, optional questions, archive,
+                             webhooks, pagination, stats, duplicate, bulk answers
 """
 
 from __future__ import annotations
@@ -972,6 +974,151 @@ def _check_analytics_optional(r: _Runner) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _check_new_features(r: _Runner, db_dir: Path) -> None:  # noqa: C901
+    from datetime import datetime, timezone
+
+    from ..domain.types import (
+        BooleanAnswer, BooleanQuestion,
+        EmailAnswer, EmailQuestion,
+        FreeTextAnswer, FreeTextQuestion,
+        MultiSelectAnswer, MultiSelectQuestion,
+        NumberAnswer, NumberQuestion,
+        Questionnaire, RatingAnswer, RatingQuestion,
+        SingleSelectAnswer, SingleSelectQuestion,
+        Template,
+    )
+    from ..domain.validation import validate_answers, validate_expiry, validate_for_submission
+    from ..persistence.sql_store import SqlStore, WebhookConfig
+
+    s = SqlStore(f"sqlite:///{db_dir / 'new_features.sqlite'}")
+
+    # --- Rating question ---------------------------------------------------
+    tpl = Template(
+        id="tpl_nf",
+        title="New Features",
+        created_at="2026-01-01T00:00:00Z",
+        description="Testing new features",
+        tags=["test", "new"],
+        questions=[
+            RatingQuestion(id="score", prompt="Rate us", min_val=1, max_val=5,
+                           min_label="Poor", max_label="Excellent"),
+            EmailQuestion(id="email", prompt="Your email"),
+            SingleSelectQuestion(id="color", prompt="Pick", options=["red", "green", "blue", "yellow"]),
+            FreeTextQuestion(id="notes", prompt="Notes", required=False),
+            NumberQuestion(id="age", prompt="Age", min=0, max=130, integer=True),
+        ],
+    )
+    s.save_template(tpl)
+
+    r.check("template description stored",
+            s.get_template("tpl_nf").description == "Testing new features")
+    r.check("template tags stored",
+            s.get_template("tpl_nf").tags == ["test", "new"])
+
+    # rating answer — valid
+    from ..domain.validation import validate_answers
+    from ..domain.types import _BaseQuestion  # noqa: PLC2701
+    ans_ok = {"score": RatingAnswer(value=4), "email": EmailAnswer(value="user@example.com"),
+               "color": SingleSelectAnswer(value="red"), "age": NumberAnswer(value=25.0)}
+    res = validate_answers(tpl, ans_ok)
+    r.check("RatingAnswer in range accepted", res.ok, str(res.errors))
+
+    # rating answer — out of range
+    ans_bad_rating = {"score": RatingAnswer(value=6), "email": EmailAnswer(value="user@example.com"),
+                      "color": SingleSelectAnswer(value="red"), "age": NumberAnswer(value=25.0)}
+    res = validate_answers(tpl, ans_bad_rating)
+    r.check("RatingAnswer out of range rejected", not res.ok)
+
+    # email answer — invalid
+    ans_bad_email = {"score": RatingAnswer(value=3), "email": EmailAnswer(value="not-an-email"),
+                     "color": SingleSelectAnswer(value="red"), "age": NumberAnswer(value=25.0)}
+    res = validate_answers(tpl, ans_bad_email)
+    r.check("EmailAnswer invalid format rejected", not res.ok)
+
+    # required=False — submission allowed without 'notes'
+    qn = Questionnaire(id=str(uuid.uuid4()), template_id="tpl_nf",
+                       created_at="2026-01-01T00:00:00Z", answers=ans_ok)
+    s.save_questionnaire(qn)
+    sub_res = validate_for_submission(tpl, ans_ok)
+    r.check("required=False question not blocking submission", sub_res.ok, str(sub_res.errors))
+
+    # hint field round-trip
+    hint_q = s.get_template("tpl_nf").questions[0]
+    # hint is None since we didn't set one; check it's accessible
+    r.check("hint field accessible on question", hasattr(hint_q, "hint"))
+
+    # --- Archive -----------------------------------------------------------
+    qn2 = Questionnaire(id=str(uuid.uuid4()), template_id="tpl_nf",
+                        created_at="2026-01-01T00:00:00Z", answers={})
+    s.save_questionnaire(qn2)
+    s.archive_questionnaire(qn2.id)
+    all_qns = s.query_questionnaires([], include_drafts=True)
+    archived_qns = s.query_questionnaires([], include_drafts=True, include_archived=True)
+    r.check("archived questionnaire hidden from default query",
+            all(q.id != qn2.id for q in all_qns))
+    r.check("archived questionnaire visible with include_archived=True",
+            any(q.id == qn2.id for q in archived_qns))
+
+    # --- validate_expiry ---------------------------------------------------
+    from datetime import datetime, timezone, timedelta
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past   = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    qn_active = Questionnaire(id=str(uuid.uuid4()), template_id="tpl_nf",
+                              created_at="2026-01-01T00:00:00Z", answers={}, expires_at=future)
+    qn_expired = Questionnaire(id=str(uuid.uuid4()), template_id="tpl_nf",
+                               created_at="2026-01-01T00:00:00Z", answers={}, expires_at=past)
+    r.check("non-expired questionnaire passes validate_expiry",
+            validate_expiry(qn_active).ok)
+    r.check("expired questionnaire fails validate_expiry",
+            not validate_expiry(qn_expired).ok)
+
+    # --- Template stats ----------------------------------------------------
+    s.submit_questionnaire(qn.id)
+    stats = s.get_template_stats("tpl_nf")
+    r.check("get_template_stats returns TemplateStats", stats is not None)
+    r.check("stats.total_submissions >= 1", stats is not None and stats.total_submissions >= 1)
+
+    # --- Duplicate template ------------------------------------------------
+    dup = s.duplicate_template("tpl_nf", new_id="tpl_nf_copy")
+    r.check("duplicate_template creates new id", dup.id == "tpl_nf_copy")
+    r.check("duplicate has same question count",
+            len(dup.questions) == len(tpl.questions))
+    r.check("duplicate starts at v1", dup.version == 1)
+
+    # --- Pagination --------------------------------------------------------
+    for i in range(5):
+        q = Questionnaire(id=str(uuid.uuid4()), template_id="tpl_nf",
+                          created_at="2026-01-01T00:00:00Z", answers={})
+        s.save_questionnaire(q)
+    page1, total = s.query_questionnaires_page([], page=1, page_size=2, include_drafts=True)
+    r.check("pagination returns page_size items", len(page1) == 2)
+    r.check("pagination total > page_size", total > 2)
+    page2, _ = s.query_questionnaires_page([], page=2, page_size=2, include_drafts=True)
+    r.check("page 2 returns different items",
+            {q.id for q in page1}.isdisjoint({q.id for q in page2}))
+
+    # --- Webhooks ----------------------------------------------------------
+    wh = s.save_webhook(WebhookConfig(
+        id=str(uuid.uuid4()), url="http://localhost:19999/hook",
+        events=["questionnaire.submit"], secret=None,
+        created_at="2026-01-01T00:00:00Z", active=True,
+    ))
+    hooks = s.list_webhooks()
+    r.check("saved webhook appears in list", any(h.id == wh.id for h in hooks))
+    s.delete_webhook(wh.id)
+    r.check("deleted webhook gone from list", all(h.id != wh.id for h in s.list_webhooks()))
+
+    # --- Free-text max-length enforcement ----------------------------------
+    from ..config import settings as cfg
+    long_text = "x" * (cfg.max_free_text_length + 1)
+    tpl_ft = Template(
+        id="tpl_ft_len", title="FT", created_at="2026-01-01T00:00:00Z",
+        questions=[FreeTextQuestion(id="ft", prompt="?")],
+    )
+    res = validate_answers(tpl_ft, {"ft": FreeTextAnswer(value=long_text)})
+    r.check("free-text exceeding max_length rejected", not res.ok)
+
+
 @app.callback(invoke_without_command=True)
 def doctor(
     ctx: typer.Context,
@@ -1037,6 +1184,10 @@ def doctor(
 
         typer.echo("## 11. Analytics (skipped if extra not installed)")
         _check_analytics_optional(r)
+        typer.echo()
+
+        typer.echo("## 12. New features")
+        _check_new_features(r, data_dir)
         typer.echo()
 
         typer.echo("=" * 50)

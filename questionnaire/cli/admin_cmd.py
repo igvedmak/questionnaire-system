@@ -1,12 +1,13 @@
-"""Admin / ops commands: migrate, audit, gdpr, analytics, api."""
+"""Admin / ops commands: migrate, audit, gdpr, analytics, api, webhook."""
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import typer
 
-from ..persistence import default_db_path, default_store
+from ..persistence import WebhookConfig, default_db_path, default_store
 from ..persistence.migrate import migrate_json_to_sql
 from ..persistence.store import JsonStore
 
@@ -15,6 +16,7 @@ audit_app = typer.Typer(help="Audit log inspection.")
 gdpr_app = typer.Typer(help="GDPR export and delete.")
 analytics_app = typer.Typer(help="Analytics on submitted questionnaires.")
 api_app = typer.Typer(help="HTTP API server.")
+webhook_app = typer.Typer(help="Manage event-driven webhooks.")
 
 
 # --- migrate -------------------------------------------------------------
@@ -134,6 +136,59 @@ def analytics_cluster(
         label = f"cluster #{c.cluster_id}" if c.cluster_id != -1 else "noise (singletons)"
         typer.echo(f"  {label}  size={c.size}")
         typer.echo(f"    exemplar: {c.exemplar_text!r}")
+
+
+# --- webhook -------------------------------------------------------------
+
+@webhook_app.command("add")
+def webhook_add(
+    url: str,
+    events: str = typer.Option("questionnaire.submit,gdpr.delete", "--events",
+                                help="Comma-separated event names"),
+    secret: str = typer.Option(None, "--secret", help="HMAC signing secret"),
+):
+    """Register a new webhook URL."""
+    from datetime import datetime, timezone
+
+    store = default_store()
+    event_list = [e.strip() for e in events.split(",") if e.strip()]
+    wh = WebhookConfig(
+        id=str(uuid.uuid4()),
+        url=url,
+        events=event_list,
+        secret=secret,
+        created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        active=True,
+    )
+    store.save_webhook(wh)
+    typer.echo(f"registered webhook {wh.id} → {url}  events={event_list}")
+
+
+@webhook_app.command("list")
+def webhook_list():
+    """List all registered webhooks."""
+    store = default_store()
+    hooks = store.list_webhooks()
+    if not hooks:
+        typer.echo("(no webhooks)")
+        return
+    for wh in hooks:
+        status = "active" if wh.active else "disabled"
+        typer.echo(f"{wh.id}  {wh.url}  events={wh.events}  status={status}")
+
+
+@webhook_app.command("delete")
+def webhook_delete(webhook_id: str):
+    """Delete a webhook by id."""
+    from ..persistence.sql_store import StoreError
+
+    store = default_store()
+    try:
+        store.delete_webhook(webhook_id)
+    except StoreError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"deleted webhook {webhook_id}")
 
 
 # --- api -----------------------------------------------------------------

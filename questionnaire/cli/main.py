@@ -18,6 +18,7 @@ app.add_typer(admin_cmd.audit_app, name="audit")
 app.add_typer(admin_cmd.gdpr_app, name="gdpr")
 app.add_typer(admin_cmd.analytics_app, name="analytics")
 app.add_typer(admin_cmd.api_app, name="api")
+app.add_typer(admin_cmd.webhook_app, name="webhook")
 app.add_typer(doctor_cmd.app, name="doctor")
 # `qst list` / `qst export` live at the top level for ergonomics.
 app.registered_commands.extend(query_cmd.app.registered_commands)

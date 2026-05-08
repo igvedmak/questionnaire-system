@@ -68,6 +68,8 @@ class QuestionnaireRow(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     submitted_at: Mapped[str | None] = mapped_column(String, nullable=True)
     respondent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -120,9 +122,20 @@ class AuditLogRow(Base):
     seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[str] = mapped_column(String, nullable=False)
     actor: Mapped[str | None] = mapped_column(String, nullable=True)
-    action: Mapped[str] = mapped_column(String, nullable=False)
-    target_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     target_id: Mapped[str | None] = mapped_column(String, nullable=True)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     prev_hash: Mapped[str] = mapped_column(String, nullable=False)
     hash: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class WebhookRow(Base):
+    __tablename__ = "webhooks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    events: Mapped[str] = mapped_column(String, nullable=False)  # JSON list of event names
+    secret: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)

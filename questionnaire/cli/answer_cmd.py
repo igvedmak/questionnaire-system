@@ -16,6 +16,8 @@ from ..domain.types import (
     BooleanQuestion,
     DateAnswer,
     DateQuestion,
+    EmailAnswer,
+    EmailQuestion,
     FreeTextAnswer,
     FreeTextQuestion,
     MultiSelectAnswer,
@@ -24,9 +26,12 @@ from ..domain.types import (
     NumberQuestion,
     Question,
     Questionnaire,
+    RatingAnswer,
+    RatingQuestion,
     SingleSelectAnswer,
     SingleSelectQuestion,
 )
+from ..domain.types import Template
 from ..domain.validation import validate_answers, validate_for_submission
 from ..persistence import SubmissionLockedError, default_store
 from .prompt import prompt_for_answer
@@ -262,6 +267,14 @@ def _coerce_answer(q: Question, raw) -> AnswerValue:
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             raise ValueError(f"expected number, got {type(raw).__name__}")
         return NumberAnswer(value=float(raw))
+    if isinstance(q, RatingQuestion):
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(f"expected integer rating, got {type(raw).__name__}")
+        return RatingAnswer(value=int(raw))
+    if isinstance(q, EmailQuestion):
+        if not isinstance(raw, str):
+            raise ValueError(f"expected str, got {type(raw).__name__}")
+        return EmailAnswer(value=raw)
     raise ValueError(f"unhandled question type: {q.type}")
 
 
@@ -287,6 +300,54 @@ def _embed_freetext_answers_if_available(store, template, qn: Questionnaire) -> 
         except Exception:
             return  # extra not installed or model load failed; skip silently
         store.save_embedding(qn.id, q_id, buf, dim)
+
+
+@app.command("validate")
+def validate_cmd(
+    template_id: str,
+    answers_path: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False),
+):
+    """Dry-run: load a JSON answers file, validate against the template, print errors or 'valid'.
+    Does NOT save anything.
+
+    \b
+    {
+      "has_allergies": true,
+      "contact_method": "Email"
+    }
+    """
+    store = default_store()
+    template = store.get_template(template_id)
+    if template is None:
+        typer.echo(f"unknown template id: {template_id}", err=True)
+        raise typer.Exit(code=1)
+
+    raw = json.loads(answers_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        typer.echo("answers JSON must be a {question_id: value} object", err=True)
+        raise typer.Exit(code=2)
+
+    by_id = _index_questions_by_id(template.questions)
+    answers: dict[str, AnswerValue] = {}
+    for qid, raw_value in raw.items():
+        q = by_id.get(qid)
+        if q is None:
+            typer.echo(f"unknown question id: {qid!r}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            answers[qid] = _coerce_answer(q, raw_value)
+        except (ValueError, TypeError) as e:
+            typer.echo(f"could not coerce answer for {qid!r}: {e}", err=True)
+            raise typer.Exit(code=2)
+
+    result = validate_for_submission(template, answers)
+    if result.ok:
+        typer.echo("valid")
+    else:
+        typer.echo("invalid:", err=True)
+        for err in result.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command("show")

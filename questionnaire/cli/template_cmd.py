@@ -23,7 +23,7 @@ from ..domain.types import (
     Template,
 )
 from ..domain.validation import validate_template
-from ..persistence import default_store
+from ..persistence import StoreError, default_store
 
 app = typer.Typer(help="Manage questionnaire templates.", no_args_is_help=True)
 
@@ -93,6 +93,38 @@ def show(
     typer.echo("questions:")
     for line in _render_questions(tpl.questions, indent=1):
         typer.echo(line)
+
+
+@app.command("stats")
+def stats(template_id: str):
+    """Show submission/draft counts and per-question answer counts for a template."""
+    store = default_store()
+    result = store.get_template_stats(template_id)
+    if result is None:
+        typer.echo(f"unknown template id: {template_id}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"template: {result.template_id}  v{result.version}")
+    typer.echo(f"submissions: {result.total_submissions}")
+    typer.echo(f"drafts:      {result.total_drafts}")
+    typer.echo("answer counts:")
+    for qid, count in sorted(result.answer_counts.items()):
+        typer.echo(f"  {qid}: {count}")
+
+
+@app.command("duplicate")
+def duplicate(
+    template_id: str,
+    new_id: str = typer.Option(None, "--new-id", help="New template id (auto-generated if omitted)"),
+    actor: str = typer.Option(None, "--actor"),
+):
+    """Create a copy of a template with a new id."""
+    store = default_store()
+    try:
+        copy = store.duplicate_template(template_id, new_id=new_id or None, actor=actor)
+    except StoreError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"duplicated {template_id} → {copy.id} v{copy.version}: {copy.title!r}")
 
 
 @app.command("seed")
