@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import typer
 
-from . import answer_cmd, query_cmd, template_cmd
+from . import admin_cmd, answer_cmd, query_cmd, template_cmd
 
 app = typer.Typer(
-    help="Questionnaire system: define templates, answer them, query the results.",
+    help="Questionnaire engine: templates, instances, expression-based "
+         "follow-ups, audit log, semantic free-text analytics.",
     no_args_is_help=True,
 )
 app.add_typer(template_cmd.app, name="template")
 app.add_typer(answer_cmd.app, name="answer")
-
-# `qst list` for questionnaires lives at the top level for ergonomics — it's
-# the most-used query command. `qst answer show <id>` shows an individual one.
+app.add_typer(admin_cmd.migrate_app, name="migrate")
+app.add_typer(admin_cmd.audit_app, name="audit")
+app.add_typer(admin_cmd.gdpr_app, name="gdpr")
+app.add_typer(admin_cmd.analytics_app, name="analytics")
+app.add_typer(admin_cmd.api_app, name="api")
+# `qst list` / `qst export` live at the top level for ergonomics.
 app.registered_commands.extend(query_cmd.app.registered_commands)
 
 

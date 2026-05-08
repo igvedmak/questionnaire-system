@@ -1,12 +1,8 @@
-"""JSON-file-backed store for the entire database.
+"""JSON-file-backed legacy store.
 
-A single file holds all templates and questionnaires. Writes are atomic
-(write to a sibling tmp file, then rename) so a crash mid-write can't
-corrupt the DB.
-
-Concurrency: this is a single-process CLI; no locking. If the file is
-modified externally between load and save, the in-memory snapshot wins.
-For an assignment-scoped task this is fine; a real system would use a DB.
+Kept as the *source* for ``qst migrate``. No new code should write to JSON;
+``SqlStore`` is the active store. Existing JSON files remain readable
+indefinitely so that previously-shipped data can be ingested.
 """
 
 from __future__ import annotations
@@ -17,7 +13,7 @@ from pathlib import Path
 from ..domain.types import Database
 
 
-class Store:
+class JsonStore:
     def __init__(self, path: Path | str):
         self.path = Path(path)
 
@@ -36,6 +32,9 @@ class Store:
         os.replace(tmp, self.path)
 
 
+# Backwards-compatible alias for older imports.
+Store = JsonStore
+
+
 def default_db_path() -> Path:
-    """Default DB location: ./data/db.json relative to current working directory."""
     return Path("data") / "db.json"

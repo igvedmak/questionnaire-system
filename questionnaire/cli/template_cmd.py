@@ -11,19 +11,19 @@ import typer
 from pydantic import ValidationError as PydanticValidationError
 
 from ..domain.types import (
-    BooleanQuestion,
     BoolFollowUp,
+    BooleanQuestion,
     DateQuestion,
-    Database,
     FreeTextQuestion,
     MultiSelectQuestion,
+    NumberQuestion,
     Question,
     SelectFollowUp,
     SingleSelectQuestion,
     Template,
 )
 from ..domain.validation import validate_template
-from ..persistence.store import Store, default_db_path
+from ..persistence import default_store
 
 app = typer.Typer(help="Manage questionnaire templates.", no_args_is_help=True)
 
@@ -32,50 +32,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _load_db() -> tuple[Store, Database]:
-    store = Store(default_db_path())
-    return store, store.load()
-
-
-def _ids_in_db(db: Database) -> set[str]:
-    """Every question id currently used across all templates in the DB."""
-    out: set[str] = set()
-
-    def walk(qs: list[Question]) -> None:
-        for q in qs:
-            out.add(q.id)
-            for fu in getattr(q, "follow_ups", []):
-                walk(fu.questions)
-
-    for tpl in db.templates.values():
-        walk(tpl.questions)
-    return out
-
-
-def _check_no_id_collision(template: Template, db: Database) -> None:
-    existing = _ids_in_db(db)
-    new_ids: set[str] = set()
-
-    def walk(qs: list[Question]) -> None:
-        for q in qs:
-            new_ids.add(q.id)
-            for fu in getattr(q, "follow_ups", []):
-                walk(fu.questions)
-
-    walk(template.questions)
-    collisions = existing & new_ids
-    if collisions:
-        raise typer.BadParameter(
-            f"question ids already used by another template: {sorted(collisions)}"
-        )
-
-
 @app.command("create-from-file")
 def create_from_file(
     path: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False),
+    actor: str = typer.Option(None, "--actor", help="Recorded in the audit log"),
 ):
-    """Load a template from a JSON file. The file should match the Template schema
-    (without `id` / `created_at`, which are generated)."""
+    """Load a template from a JSON file. New templates start at v1; subsequent
+    saves of the same id append a new version."""
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw.setdefault("id", str(uuid.uuid4()))
     raw.setdefault("created_at", _now_iso())
@@ -93,59 +56,57 @@ def create_from_file(
             typer.echo(f"  - {err}", err=True)
         raise typer.Exit(code=2)
 
-    store, db = _load_db()
-    _check_no_id_collision(template, db)
-    db.templates[template.id] = template
-    store.save(db)
-
-    typer.echo(f"created template {template.id}: {template.title!r}")
+    store = default_store()
+    saved = store.save_template(template, actor=actor)
+    typer.echo(f"saved template {saved.id} v{saved.version}: {saved.title!r}")
 
 
 @app.command("list")
 def list_cmd():
-    """List all templates."""
-    _, db = _load_db()
-    if not db.templates:
+    """List all templates at their current version."""
+    store = default_store()
+    templates = store.list_templates()
+    if not templates:
         typer.echo("(no templates)")
         return
-    for tpl in db.templates.values():
-        typer.echo(f"{tpl.id}  {tpl.title}  ({_count_questions(tpl)} questions)")
+    for tpl in templates:
+        n = _count_questions(tpl)
+        typer.echo(f"{tpl.id}  v{tpl.version}  {tpl.title}  ({n} questions)")
 
 
 @app.command("show")
-def show(template_id: str):
-    """Print a template tree."""
-    _, db = _load_db()
-    tpl = db.templates.get(template_id)
+def show(
+    template_id: str,
+    version: int = typer.Option(None, "--version", "-v",
+                                help="Show a specific version (default: current)"),
+):
+    store = default_store()
+    tpl = store.get_template(template_id, version=version)
     if tpl is None:
         typer.echo(f"unknown template id: {template_id}", err=True)
         raise typer.Exit(code=1)
-    typer.echo(f"{tpl.id}  {tpl.title}")
+    typer.echo(f"{tpl.id}  v{tpl.version}  {tpl.title}")
     typer.echo(f"created_at: {tpl.created_at}")
+    versions = store.list_template_versions(template_id)
+    if len(versions) > 1:
+        typer.echo(f"versions: {versions}")
     typer.echo("questions:")
     for line in _render_questions(tpl.questions, indent=1):
         typer.echo(line)
 
 
 @app.command("seed")
-def seed():
+def seed(actor: str = typer.Option(None, "--actor")):
     """Load two demo templates with nested follow-ups."""
-    store, db = _load_db()
-    templates = [_seed_medical(), _seed_travel()]
-    for tpl in templates:
-        if tpl.id in db.templates:
+    store = default_store()
+    existing = {t.id for t in store.list_templates()}
+    seeds = [_seed_medical(), _seed_travel()]
+    for tpl in seeds:
+        if tpl.id in existing:
             typer.echo(f"  skip {tpl.id}: already exists")
             continue
-        # Seed templates use stable ids; if the previous seed was wiped, those
-        # ids may collide if other templates reused them. Sanity check.
-        try:
-            _check_no_id_collision(tpl, db)
-        except typer.BadParameter as e:
-            typer.echo(f"  cannot seed {tpl.id}: {e}", err=True)
-            continue
-        db.templates[tpl.id] = tpl
+        store.save_template(tpl, actor=actor)
         typer.echo(f"  seeded {tpl.id}: {tpl.title!r}")
-    store.save(db)
 
 
 # --- Rendering helpers ----------------------------------------------------
@@ -157,7 +118,7 @@ def _count_questions(tpl: Template) -> int:
         nonlocal n
         for q in qs:
             n += 1
-            for fu in getattr(q, "follow_ups", []):
+            for fu in getattr(q, "follow_ups", []) or []:
                 walk(fu.questions)
 
     walk(tpl.questions)
@@ -171,15 +132,23 @@ def _render_questions(qs: list[Question], indent: int) -> list[str]:
         suffix = ""
         if isinstance(q, (SingleSelectQuestion, MultiSelectQuestion)):
             suffix = f"  options={q.options}"
+        elif isinstance(q, NumberQuestion):
+            bits = []
+            if q.min is not None: bits.append(f"min={q.min}")
+            if q.max is not None: bits.append(f"max={q.max}")
+            if q.integer: bits.append("integer")
+            if bits: suffix = f"  ({', '.join(bits)})"
+        if getattr(q, "pii", False):
+            suffix += "  [PII]"
         lines.append(f"{pad}- [{q.type}] {q.id}: {q.prompt}{suffix}")
-        if isinstance(q, BooleanQuestion):
-            for fu in q.follow_ups:
+        for fu in getattr(q, "follow_ups", []) or []:
+            if isinstance(fu, BoolFollowUp):
                 lines.append(f"{pad}  if answer == {fu.when_equals}:")
-                lines.extend(_render_questions(fu.questions, indent + 2))
-        elif isinstance(q, (SingleSelectQuestion, MultiSelectQuestion)):
-            for fu in q.follow_ups:
+            elif isinstance(fu, SelectFollowUp):
                 lines.append(f"{pad}  if {fu.when_option_selected!r} selected:")
-                lines.extend(_render_questions(fu.questions, indent + 2))
+            else:  # ExprFollowUp
+                lines.append(f"{pad}  if expr({fu.condition.op}):")
+            lines.extend(_render_questions(fu.questions, indent + 2))
     return lines
 
 
@@ -194,17 +163,14 @@ def _seed_medical() -> Template:
             BooleanQuestion(
                 id="has_allergies",
                 prompt="Do you have any allergies?",
-                follow_ups=[
-                    BoolFollowUp(
-                        when_equals=True,
-                        questions=[
-                            FreeTextQuestion(
-                                id="allergy_details",
-                                prompt="Please specify your allergies",
-                            ),
-                        ],
-                    )
-                ],
+                follow_ups=[BoolFollowUp(
+                    when_equals=True,
+                    questions=[FreeTextQuestion(
+                        id="allergy_details",
+                        prompt="Please specify your allergies",
+                        pii=True,  # PII flag triggers encryption at rest
+                    )],
+                )],
             ),
             SingleSelectQuestion(
                 id="contact_method",
@@ -212,21 +178,22 @@ def _seed_medical() -> Template:
                 options=["Email", "Phone", "SMS", "Mail"],
             ),
             DateQuestion(id="date_of_birth", prompt="Date of birth"),
+            NumberQuestion(
+                id="age",
+                prompt="Your age",
+                min=0, max=130, integer=True,
+            ),
             MultiSelectQuestion(
                 id="symptoms",
                 prompt="Which symptoms are you experiencing?",
                 options=["Headache", "Fever", "Cough", "Fatigue", "Nausea"],
-                follow_ups=[
-                    SelectFollowUp(
-                        when_option_selected="Fever",
-                        questions=[
-                            FreeTextQuestion(
-                                id="fever_duration",
-                                prompt="For how many days have you had a fever?",
-                            ),
-                        ],
-                    )
-                ],
+                follow_ups=[SelectFollowUp(
+                    when_option_selected="Fever",
+                    questions=[FreeTextQuestion(
+                        id="fever_duration",
+                        prompt="For how many days have you had a fever?",
+                    )],
+                )],
             ),
         ],
     )
@@ -242,44 +209,32 @@ def _seed_travel() -> Template:
                 id="region",
                 prompt="Which region did you travel to?",
                 options=["North America", "Europe", "Asia", "Other"],
-                follow_ups=[
-                    SelectFollowUp(
-                        when_option_selected="Other",
-                        questions=[
-                            FreeTextQuestion(
-                                id="region_other",
-                                prompt="Please specify the region",
-                            ),
-                        ],
-                    )
-                ],
+                follow_ups=[SelectFollowUp(
+                    when_option_selected="Other",
+                    questions=[FreeTextQuestion(
+                        id="region_other",
+                        prompt="Please specify the region",
+                    )],
+                )],
             ),
             BooleanQuestion(
                 id="business_trip",
                 prompt="Was this a business trip?",
-                follow_ups=[
-                    BoolFollowUp(
-                        when_equals=True,
-                        questions=[
-                            SingleSelectQuestion(
-                                id="industry",
-                                prompt="Industry",
-                                options=["Tech", "Finance", "Healthcare", "Other"],
-                                follow_ups=[
-                                    SelectFollowUp(
-                                        when_option_selected="Other",
-                                        questions=[
-                                            FreeTextQuestion(
-                                                id="industry_other",
-                                                prompt="Please specify the industry",
-                                            ),
-                                        ],
-                                    )
-                                ],
-                            ),
-                        ],
-                    )
-                ],
+                follow_ups=[BoolFollowUp(
+                    when_equals=True,
+                    questions=[SingleSelectQuestion(
+                        id="industry",
+                        prompt="Industry",
+                        options=["Tech", "Finance", "Healthcare", "Other"],
+                        follow_ups=[SelectFollowUp(
+                            when_option_selected="Other",
+                            questions=[FreeTextQuestion(
+                                id="industry_other",
+                                prompt="Please specify the industry",
+                            )],
+                        )],
+                    )],
+                )],
             ),
             MultiSelectQuestion(
                 id="activities",
@@ -287,5 +242,9 @@ def _seed_travel() -> Template:
                 options=["Hiking", "Sightseeing", "Food tours", "Beach", "Shopping"],
             ),
             DateQuestion(id="return_date", prompt="Return date"),
+            FreeTextQuestion(
+                id="favorite_moment",
+                prompt="Describe your favorite moment from the trip",
+            ),
         ],
     )

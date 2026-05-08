@@ -1,11 +1,34 @@
-# Questionnaire System
+# Questionnaire Engine
 
-A small CLI for defining questionnaire templates, answering them, and querying
-the resulting submissions.
+A programmable questionnaire engine — templates with expression-based
+follow-ups, instances answered through a CLI or HTTP API, indexed
+filtering, tamper-evident audit log, encrypted PII fields, GDPR
+export/delete, and semantic clustering of free-text answers.
 
-Implements the full home-assignment spec: five question types, recursive
-follow-up questions, type-aware answer validation, JSON persistence between
-runs, and AND-combined filtering of submitted questionnaires.
+Implements the original home-assignment spec in full and extends it
+toward a credible product foundation.
+
+---
+
+## Highlights
+
+| Feature | Where |
+|---|---|
+| 6 question types: boolean, single-select, multi-select, date, free-text, **number** | `domain/types.py` |
+| **Recursive follow-ups** with two trigger shapes (legacy equality + arbitrary expression AST) | `domain/expression.py`, `domain/flow.py` |
+| Single tree-walker (`resolve_active_questions`) drives CLI, validation, rendering, and the API | `domain/flow.py` |
+| Two-tier validation: structural template rules, per-type answer rules, orphaned-answer detection | `domain/validation.py` |
+| **SQLite store** with indexed answer rows; AND filters push down to SQL | `persistence/sql_store.py` |
+| **Template versioning**: edits append a new version; questionnaires snapshot the version they were created against | `persistence/sql_store.py` |
+| **Submission immutability**: once submitted, answers are frozen at the SQL layer | `persistence/sql_store.py` |
+| **Audit log** with SHA-256 hash chain (tamper-evident) | `domain/audit.py`, audit table |
+| **PII encryption at rest** (Fernet) for fields flagged `pii: true` | `domain/encryption.py` |
+| **GDPR export & delete** by respondent id | `persistence/sql_store.py`, `/respondents/{id}` endpoints |
+| **HTTP API** (FastAPI) mirroring the CLI 1:1, OpenAPI auto-generated | `api/app.py` |
+| **CSV export** of filtered queries, streamed | `cli/query_cmd.py`, `/questionnaires.csv` |
+| **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional analytics extra | `analytics/clustering.py` |
+| **Migration** from the legacy JSON store via `qst migrate` | `persistence/migrate.py` |
+| **95 tests** covering domain, store, audit, encryption, expression engine, migration, and the API | `tests/` |
 
 ---
 
@@ -14,49 +37,87 @@ runs, and AND-combined filtering of submitted questionnaires.
 Requires Python 3.11+.
 
 ```bash
-# Install (with `uv`, recommended)
-uv venv
-uv pip install -e ".[dev]"
+# Install with uv (recommended; faster) or stdlib pip
+uv venv && uv pip install -e ".[dev]"
+# OR: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
-# Or with stdlib venv + pip
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+# Optional analytics extra (sentence-transformers + HDBSCAN; ~80MB model)
+uv pip install -e ".[dev,analytics]"
 
-# Activate so `qst` is on PATH
 source .venv/bin/activate
+
+# Persistent encryption key for PII fields (otherwise data written by one
+# process can't be read by the next — a development-only convenience).
+export QST_PII_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ```
 
-A 30-second tour:
+A 60-second tour:
 
 ```bash
-qst template seed                      # load two demo templates
-qst template list
-qst template show tpl_medical
+qst template seed                    # two demo templates with PII + nested follow-ups
+qst template list                    # current versions
+qst template show tpl_medical -v 1   # specific version
 
-qst answer start tpl_medical           # interactive — prompts you per question;
-                                       # follow-ups appear as their triggers fire
+qst answer start tpl_medical \
+    --respondent alice               # interactive; follow-ups appear as triggers fire
+qst answer resume <questionnaire_id> # pick up a draft
 
-qst list                               # all submitted questionnaires
-qst list -t tpl_medical                # filter by template
-qst list -i contact_method=Email       # AND filter: includes
-qst list -i contact_method=Email \
-         -i symptoms=Fever \
-         -x activities=Beach           # AND of all three
-qst answer show <questionnaire_id>     # detailed view
+qst list                             # submitted questionnaires
+qst list -t tpl_medical \
+        -i contact_method=Email \
+        -i symptoms=Fever            # AND of three filters
+
+qst export submissions.csv -t tpl_medical
+
+qst audit list                       # every state change
+qst audit verify                     # SHA-256 chain integrity check
+
+qst gdpr export alice alice.zip      # all of alice's submissions
+qst gdpr delete alice --yes          # permanent, audit-logged
+
+qst api --port 8000                  # HTTP API + /docs (OpenAPI)
 ```
 
-Data lives in `./data/db.json` (relative to wherever you run `qst`). Delete
-the file to reset.
+```bash
+# Migrate from the legacy JSON store (data/db.json) into SQLite (data/db.sqlite):
+qst migrate
+```
 
 ---
 
-## Run the tests
+## HTTP API
+
+Boot:
 
 ```bash
-.venv/bin/pytest
+qst api --host 0.0.0.0 --port 8000
+# OpenAPI: http://localhost:8000/docs
 ```
 
-44 tests covering the four modules below. Run in ~0.3s.
+Endpoints:
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/templates` | New template (auto v1) or new version (if id is reused) |
+| GET | `/templates` | List current versions |
+| GET | `/templates/{id}` | `?version=` for a specific version |
+| GET | `/templates/{id}/versions` | All versions |
+| POST | `/questionnaires` | Start an instance |
+| GET | `/questionnaires/{id}` | Get with answers |
+| GET | `/questionnaires` | Filter via `?template=`, `?includes=qid=val`, `?excludes=qid=val`, `?include_drafts=` |
+| PUT | `/questionnaires/{id}/answers/{qid}` | Upsert one answer (rejected with 409 after submit) |
+| DELETE | `/questionnaires/{id}/answers/{qid}` | Remove one answer (rejected with 409 after submit) |
+| POST | `/questionnaires/{id}/submit` | Lock the questionnaire |
+| GET | `/questionnaires.csv` | Streaming CSV of the filtered set |
+| GET | `/audit?since=<seq>` | Audit log entries |
+| POST | `/audit/verify` | Recompute the chain, 200 OK or 409 |
+| GET | `/respondents/{id}/export` | GDPR zip |
+| DELETE | `/respondents/{id}` | GDPR hard-delete (audit-logged) |
+| GET | `/analytics/{question_id}/clusters` | Semantic clusters of free-text answers (analytics extra required) |
+
+The `X-Actor` header (when present) is recorded in the audit log for every
+state-changing request. **No auth in this round** — the documented next
+step.
 
 ---
 
@@ -65,176 +126,184 @@ the file to reset.
 ```
 questionnaire/
   domain/
-    types.py        # Pydantic discriminated unions: Question, AnswerValue,
-                    # Template, Questionnaire, Database
-    flow.py         # resolve_active_questions: walks the template tree,
-                    # producing the ordered list of currently-active questions
-    validation.py   # validate_template (structural rules) and
-                    # validate_answers / validate_for_submission
-    filtering.py    # apply_filters + parse_filters (CLI string → typed Filter)
+    types.py          # Question, AnswerValue, Template, Questionnaire — Pydantic discriminated unions
+    expression.py     # Tiny AST + evaluator for follow-up conditions
+    flow.py           # resolve_active_questions, next_unanswered_question
+    validation.py     # validate_template, validate_answers, validate_for_submission
+    audit.py          # Hash-chained AuditEvent / AuditRecord
+    encryption.py     # Fernet wrapper for PII answers
+    filtering.py      # Filter types, parse_filters, in-memory apply_filters (kept for tests)
   persistence/
-    store.py        # atomic JSON-file store
+    models.py         # SQLAlchemy 2.x ORM models
+    sql_store.py      # SqlStore — the active store
+    migrate.py        # JSON → SQLite migration
+    store.py          # Legacy JsonStore (kept for migration source)
   cli/
-    main.py         # Typer entry point
-    template_cmd.py # template create-from-file / list / show / seed
-    answer_cmd.py   # answer start / resume / show; the interactive loop
-    query_cmd.py    # qst list (with --template / --includes / --excludes)
-    prompt.py       # one questionary helper per question type
+    main.py           # Typer entry; subcommand dispatch
+    template_cmd.py   # qst template create-from-file / list / show / seed
+    answer_cmd.py     # qst answer start / resume / show
+    query_cmd.py      # qst list / qst export
+    admin_cmd.py      # qst migrate / audit / gdpr / analytics / api
+    prompt.py         # questionary helpers per question type
+  api/
+    app.py            # FastAPI factory + all routes
+  analytics/
+    embeddings.py     # Lazy sentence-transformers wrapper
+    clustering.py     # HDBSCAN over the embeddings
 tests/
-  test_flow.py
-  test_validation.py
-  test_filtering.py
-  test_store.py
+  test_flow.py            # tree walker, original cases
+  test_flow_with_expr.py  # tree walker with ExprFollowUp
+  test_validation.py      # template + answer validation, number type
+  test_filtering.py       # in-memory filter combination
+  test_store.py           # legacy JsonStore (still readable)
+  test_sql_store.py       # SqlStore CRUD, versioning, immutability, push-down filters, GDPR
+  test_audit.py           # hash chain integrity + tamper detection
+  test_encryption.py      # Fernet round-trip + key rotation behavior
+  test_expression.py      # AST evaluation + JSON round-trip
+  test_migrate.py         # JSON → SQLite fidelity
+  test_api.py             # HTTP API end-to-end via TestClient
+```
+
+Run all tests:
+
+```bash
+.venv/bin/pytest
+# 95 tests in ~4s
 ```
 
 ---
 
-## Key design decisions
+## What changed from v0.1 (the original assignment)
 
-### 1. Questions are a discriminated union, follow-ups make a recursive tree
+`v0.1` was a clean exercise: JSON file, in-memory filtering, CLI only.
+`v0.2` keeps every previous test passing and lifts the codebase toward a
+sellable engine.
 
-Five concrete question classes (Boolean, SingleSelect, MultiSelect, Date,
-FreeText) are united via `Annotated[Union[...], Field(discriminator="type")]`.
-Pydantic v2 round-trips this to/from JSON natively — no custom deserializer.
+| Theme | v0.1 → v0.2 |
+|---|---|
+| Storage | Single JSON file → SQLite via SQLAlchemy 2.x; Postgres URL is a 1-line swap |
+| Filtering | O(N) full scan in Python → indexed SQL `EXISTS` per filter; AND folds into one query |
+| Follow-ups | Equality only (`when_equals`, `when_option_selected`) → expression AST: `eq/ne/gt/lt/ge/le/in/contains/and/or/not` referencing any answer; legacy shapes still accepted |
+| Question types | 5 → 6 (added `number` with `min`/`max`/`integer`) |
+| Templates | Immutable single version → versioned (edits append, questionnaires reference their snapshot) |
+| Compliance | None → submission immutability, append-only audit log with hash chain, PII encryption at rest, GDPR export/delete |
+| Interface | CLI only → CLI + FastAPI HTTP API |
+| Analytics | None → optional semantic clustering of free-text answers |
+| Tests | 44 → 95 |
 
-The three branchable types carry `follow_ups: list[FollowUp]`, where each
-follow-up holds `questions: list[Question]`. Pydantic resolves the forward
-reference, so the tree can nest arbitrarily deep.
+---
 
-The type system enforces that date and free-text questions cannot have
-follow-ups — a structural error in JSON would be a Pydantic parse error,
-not a runtime surprise.
+## Design decisions worth knowing
 
-### 2. One function answers "which questions are active right now"
+### Expression engine, not `eval`
+Follow-up conditions are JSON-serializable AST nodes evaluated by a
+hand-rolled walker. There is no `eval`, no `simpleeval`, no string
+expression language. Type errors at evaluation time return False rather
+than crash, so a malformed condition can't bring the resolver down — at
+worst its follow-up just doesn't fire.
 
-`resolve_active_questions(template_questions, answers)` is the single source
-of truth for tree-walking. It's called by:
+### Missing-value semantics (SQL-like)
+`Var(question_id)` of an unanswered question evaluates to a sentinel that
+makes comparisons return False, AND/OR treat it as falsy, and `NOT
+missing` return True. This avoids surprising activations and matches the
+intuition behind `WHERE x = ?` in SQL with a NULL `x`.
 
-- the interactive CLI loop (to decide what to prompt next),
-- `validate_for_submission` (to know what must be answered),
-- `qst answer show` (to render in a sensible order).
+### Why a single "active question set" function
+`resolve_active_questions` is called by the CLI (decide what to ask
+next), the validator (decide what must be present for submission), and
+the renderer (display in order). Bugs in tree walking would manifest in
+all three; centralizing the logic also centralizes the test target.
 
-Bugs in tree walking would manifest in all three — making this one function
-the highest-leverage test target. See [tests/test_flow.py](tests/test_flow.py).
+### Inverted-index filtering via SQL
+Single-select / multi-select answers are stored in a row-per-option
+shape (`answers(questionnaire_id, question_id, option_index, value_text)`)
+with an index on `(question_id, value_text)`. Each `--includes`
+becomes a `WHERE EXISTS (...)`, each `--excludes` a `WHERE NOT EXISTS`.
+At ~100k questionnaires, filter latency moves from seconds to single-digit
+milliseconds.
 
-### 3. Follow-up triggers are JSON-serializable predicates
+### Versioning that doesn't break old data
+Templates are append-only `(id, version)`. Each questionnaire snapshots
+its `(template_id, template_version)` at creation time. Editing a
+template never invalidates prior responses; old responses keep working
+against the version they were anchored to.
 
-Two trigger shapes:
+### Submission immutability
+`submitted_at` is the lock. The store refuses any `upsert_answer`,
+`delete_answer`, or repeat-submit on a submitted questionnaire. Edits
+go through a controlled "amend" path that doesn't exist yet — keeps the
+audit trail clean.
 
-- `BoolFollowUp(when_equals: bool)` — for boolean questions
-- `SelectFollowUp(when_option_selected: str)` — for both single- and
-  multi-select. For single-select, "selected" means the chosen option
-  equals the trigger value. For multi-select, "selected" means the trigger
-  value is among the chosen options. Same predicate; the evaluator branches
-  on the answer type.
+### Hash-chained audit log
+Each row's `hash = SHA-256(prev_hash || canonical_json(payload))`.
+Editing a payload without recomputing every subsequent row breaks
+verification. Single-writer chain — fine for single-process CLI; in a
+multi-writer Postgres setup we'd add an advisory lock.
 
-No closures, no expression strings — predicates round-trip through JSON cleanly.
+### PII encryption: Fernet, key from env
+`QST_PII_KEY` is a Fernet base64-urlsafe key. PII free-text answers are
+encrypted at write, decrypted on read, and the ciphertext is never
+logged. Key rotation and KMS integration are documented next-step work
+(out of scope for this round).
 
-### 4. Filters: AND combined, includes/excludes restricted to select questions
+### Filters on PII / non-select questions
+Includes/Excludes are restricted to single/multi-select at parse time —
+trying to filter on a free-text or PII question is rejected with a clear
+error, not silently ignored.
 
-`Filter` is `TemplateFilter | IncludesFilter | ExcludesFilter`. Filters are
-parsed from CLI strings into typed objects; an includes/excludes filter
-targeting a non-select question is rejected at parse time with a clear
-error, rather than silently matching nothing.
-
-Edge case decision: when a filter targets a question that the questionnaire
-never reached (because a follow-up never triggered), `IncludesFilter` returns
-False and `ExcludesFilter` returns True. This matches the natural English
-reading: "questionnaire X excludes value Y" is true if X never had a chance
-to include Y in the first place. Tested in
-[tests/test_filtering.py](tests/test_filtering.py).
-
-### 5. Drafts are persisted; only submitted questionnaires appear in `qst list`
-
-The interactive answering flow saves after every answer, so a Ctrl-C never
-loses progress. `qst answer resume <id>` picks up where you left off.
-By default `qst list` shows only submitted questionnaires; use
-`--include-drafts` to see in-progress ones.
-
-### 6. The orphaned-answer trap
-
-If a user answers a follow-up question, then changes the parent answer so
-the trigger no longer fires, the follow-up's answer becomes "orphaned":
-present in the answers map but pointing at an inactive question. Validation
-catches this and reports it. The interactive flow doesn't currently allow
-re-answering a previous question (would need a "back" affordance), but the
-domain layer is correct for it.
-
-### 7. Question IDs are globally unique across all templates
-
-The filter command targets a question by ID alone (`--includes color=red`).
-For that to be unambiguous, IDs must be globally unique, not just unique
-within a template. `qst template create-from-file` rejects collisions at
-load time.
-
-### 8. Persistence is a single JSON file, written atomically
-
-Atomic writes via tmp-file + `os.replace` guarantee the DB is never
-half-written even on a crash. No DB, no migrations, no concurrency control —
-this is a single-process CLI.
-
-### 9. What I deliberately did **not** build
-
-- web UI / REST API
-- multi-user concurrency or file locking
-- template editing or deletion
-- schema versioning
-- internationalization
-
-These are real concerns for a real system, but each would have added more
-code than the entire domain layer combined and obscured what the spec was
-actually asking for.
+### Excludes-when-not-reached
+When a follow-up never triggers and so the targeted question wasn't
+even asked, `IncludesFilter` returns False and `ExcludesFilter` returns
+True. This matches the natural English reading and is tested.
 
 ---
 
 ## Assumptions
 
-1. **Templates are immutable once created.** The spec says this for
-   questionnaires; I extended it to templates for simplicity (no
-   `template edit` command).
-2. **Date format is `YYYY-MM-DD`.** Real calendar date, no time, no
-   timezone. `2024-02-30` is rejected; `2024-02-29` (leap year) is accepted.
-3. **Single-select requires more than 2 options** (per spec wording).
-   Enforced in `validate_template`.
-4. **Multi-select requires at least one selection at answer time.**
-5. **Filter values are compared as case-sensitive strings** that exactly
-   match option strings.
-6. **Question IDs are globally unique.** See decision #7 above.
-7. **`excludes` matches questionnaires where the question was never reached.**
-   See decision #4 above.
+1. **Question IDs are globally unique** across all templates and
+   versions. The filter command targets a question by ID alone, so
+   uniqueness keeps the CLI ergonomic.
+2. **Date format is `YYYY-MM-DD`**. Real calendar dates only —
+   `2024-02-30` rejected; `2024-02-29` (leap year) accepted.
+3. **Single-select requires more than 2 options**, per the spec.
+4. **Multi-select requires at least one selection** at answer time.
+5. **`QST_PII_KEY`** must be set in production. The dev fallback
+   (auto-generate ephemeral key) is intentionally process-local so
+   that data encrypted under it can't survive a restart — fail-fast
+   beats silent corruption.
+6. **No auth in this round**. The `X-Actor` header is advisory and
+   recorded in the audit log; it is not authenticated.
+7. **The `analytics` extra** is opt-in. Without it, the
+   `/analytics/.../clusters` endpoint returns 503 and embeddings are
+   skipped on submit.
 
 ---
 
-## What's in the tests
+## Deliberately deferred (and why)
 
-44 tests, organized by module:
+| Deferred | Why |
+|---|---|
+| Web UI | API + OpenAPI is the value here; UI is a separate skill and a separate effort |
+| Auth (OAuth, API keys, RBAC) | Real auth design wants a day on its own; the audit-log foundation is in place |
+| Multi-tenancy | Same — needs a workspace model first |
+| Postgres-now | SQLite ships in this round; Postgres swap is a SQLAlchemy URL change |
+| Background workers for embeddings | Inline embedding works at small scale; promote to a worker once volume warrants |
+| Drag-drop visual template builder | High effort, low differentiation when JSON-via-API is so direct |
+| KMS / key rotation | Single Fernet key in this round; envelope-encryption is the documented next step |
+| Webhooks | A day on retry/security/HMAC by itself; out of scope |
 
-**`test_flow.py`** — the tree walker:
-- top-level questions only, no follow-ups
-- follow-up triggered / not triggered (boolean, single-select)
-- nested follow-ups (depth 2) including the "flip parent → subtree collapses" case
-- multi-select where multiple chosen options each trigger different follow-ups
-- `next_unanswered_question` skipping answered and inactive questions
+---
 
-**`test_validation.py`** — both layers of validation:
-- template structure: option count, duplicate IDs, follow-up triggers
-  pointing at non-existent options
-- answer correctness: type mismatch, single-select wrong option,
-  multi-select empty/duplicates/invalid options
-- date format: parametrized over `2024-02-30`, `2025-13-01`, `2024-02-29`,
-  `not-a-date`, `2025/01/01`, etc.
-- the orphaned-answer case (parent flipped after follow-up was answered)
-- submission requires all active questions, but does NOT require inactive ones
+## What lights up next
 
-**`test_filtering.py`** — the query layer:
-- template filter, includes/excludes on single-select and multi-select
-- the "question not reached" edge case (decision #4)
-- AND combination of three filters
-- `parse_filters` rejection of: non-select target, unknown question,
-  unknown template, malformed `key=value`
-- `parse_filters` finds questions nested inside follow-ups
-
-**`test_store.py`** — persistence:
-- empty/missing/blank file → empty Database
-- full round-trip preserves the entire DB structurally
-- atomic write leaves no `.tmp` file behind
+1. **Auth + tenancy** unlocks the real B-direction (compliance/intake
+   for healthcare, fintech, legal): every audit row gets a real actor;
+   workspaces partition data; per-tenant Fernet keys.
+2. **Semantic clustering UI**: `GET /analytics/{q}/clusters` already
+   returns clusters with exemplars — surfacing them in a small Svelte
+   page would land the differentiating story.
+3. **Postgres swap** for write-throughput beyond a single SQLite writer.
+   The store interface and SQL are dialect-agnostic; this is mechanical.
+4. **Property-based tests** (Hypothesis) on the validator and the
+   expression evaluator — the kind of test that finds the bug we
+   haven't thought of yet.

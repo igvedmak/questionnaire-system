@@ -16,6 +16,8 @@ from questionnaire.domain.types import (
     FreeTextQuestion,
     MultiSelectAnswer,
     MultiSelectQuestion,
+    NumberAnswer,
+    NumberQuestion,
     SelectFollowUp,
     SingleSelectAnswer,
     SingleSelectQuestion,
@@ -192,6 +194,40 @@ def test_validate_for_submission_passes_when_complete():
         },
     )
     assert res.ok
+
+
+def test_number_rejects_below_min():
+    tpl = _tpl(NumberQuestion(id="n", prompt="?", min=0, max=10))
+    res = validate_answers(tpl, {"n": NumberAnswer(value=-1)})
+    assert not res.ok
+    assert any("below min" in str(e) for e in res.errors)
+
+
+def test_number_rejects_above_max():
+    tpl = _tpl(NumberQuestion(id="n", prompt="?", min=0, max=10))
+    res = validate_answers(tpl, {"n": NumberAnswer(value=11)})
+    assert not res.ok
+
+
+def test_number_rejects_non_integer_when_integer_required():
+    tpl = _tpl(NumberQuestion(id="n", prompt="?", integer=True))
+    res = validate_answers(tpl, {"n": NumberAnswer(value=3.5)})
+    assert not res.ok
+    assert any("not an integer" in str(e) for e in res.errors)
+
+
+def test_number_accepts_in_range():
+    tpl = _tpl(NumberQuestion(id="n", prompt="?", min=0, max=100))
+    assert validate_answers(tpl, {"n": NumberAnswer(value=42)}).ok
+
+
+def test_template_with_reversed_number_bounds_rejected():
+    tpl = _tpl(NumberQuestion(id="n", prompt="?", min=10, max=0))
+    from questionnaire.domain.validation import validate_template
+
+    res = validate_template(tpl)
+    assert not res.ok
+    assert any("bounds reversed" in str(e) for e in res.errors)
 
 
 def test_validate_for_submission_does_not_require_inactive_follow_ups():

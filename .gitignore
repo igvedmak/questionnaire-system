@@ -7,5 +7,9 @@ venv/
 .coverage
 htmlcov/
 data/db.json
+data/db.sqlite
+data/db.sqlite-journal
+data/db.sqlite-wal
+data/db.sqlite-shm
 *.swp
 .DS_Store
