@@ -12,10 +12,11 @@
 # `make clean`         — wipe venv + DB + caches.
 #
 # Docker:
-# `make docker-up`     — build image + start API at http://localhost:8000.
+# `make docker-up`     — build images + start API (:8000) and UI (:3000).
 # `make docker-down`   — stop containers.
 # `make docker-logs`   — tail API logs.
-# `make docker-build`  — build image only.
+# `make docker-build`  — build images only.
+# Set QST_LLM_API_KEY=sk-ant-... in your shell or .env for AI features.
 
 PY    ?= python3
 VENV  ?= .venv
@@ -33,11 +34,11 @@ help:
 install:
 ifneq ($(UV),)
 	$(UV) venv $(VENV)
-	$(UV) pip install -e ".[dev,analytics]"
+	$(UV) pip install -e ".[dev,analytics,llm]"
 else
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -e ".[dev,analytics]"
+	$(BIN)/pip install -e ".[dev,analytics,llm]"
 endif
 	@echo
 	@echo "  installed. Try:  make verify"
@@ -78,9 +79,9 @@ docker-build:
 	docker build -t questionnaire-engine .
 
 docker-up:
-	docker compose up -d
+	docker compose up -d --build
 	@echo "  API running at http://localhost:8000/docs"
-	@echo "  UI  running at http://localhost:5173  (make ui for local dev)"
+	@echo "  UI  running at http://localhost:3000"
 
 docker-down:
 	docker compose down

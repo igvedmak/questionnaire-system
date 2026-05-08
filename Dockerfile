@@ -14,7 +14,7 @@ COPY pyproject.toml .
 RUN uv venv /app/.venv && \
     mkdir -p questionnaire && \
     echo "" > questionnaire/__init__.py && \
-    uv pip install --python /app/.venv/bin/python ".[analytics]" && \
+    uv pip install --python /app/.venv/bin/python ".[analytics,llm]" && \
     rm -rf questionnaire
 
 # --- Source layer (fast re-install when only source changes) ---------------
