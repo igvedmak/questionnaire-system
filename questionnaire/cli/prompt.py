@@ -21,6 +21,8 @@ from ..domain.types import (
     FreeTextQuestion,
     MultiSelectAnswer,
     MultiSelectQuestion,
+    NumberAnswer,
+    NumberQuestion,
     Question,
     SingleSelectAnswer,
     SingleSelectQuestion,
@@ -39,6 +41,8 @@ def prompt_for_answer(q: Question) -> AnswerValue:
         return _prompt_date(q)
     if isinstance(q, FreeTextQuestion):
         return _prompt_free_text(q)
+    if isinstance(q, NumberQuestion):
+        return _prompt_number(q)
     raise RuntimeError(f"unhandled question type: {q.type}")
 
 
@@ -91,3 +95,35 @@ def _prompt_free_text(q: FreeTextQuestion) -> FreeTextAnswer:
     if answer is None:
         raise KeyboardInterrupt
     return FreeTextAnswer(value=answer)
+
+
+def _prompt_number(q: NumberQuestion) -> NumberAnswer:
+    bounds = []
+    if q.min is not None:
+        bounds.append(f"min={q.min:g}")
+    if q.max is not None:
+        bounds.append(f"max={q.max:g}")
+    if q.integer:
+        bounds.append("integer")
+    suffix = f"  ({', '.join(bounds)})" if bounds else ""
+
+    while True:
+        raw = questionary.text(q.prompt + suffix).ask()
+        if raw is None:
+            raise KeyboardInterrupt
+        raw = raw.strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            print("  ! not a number")
+            continue
+        if q.integer and not value.is_integer():
+            print(f"  ! must be an integer (got {raw})")
+            continue
+        if q.min is not None and value < q.min:
+            print(f"  ! below min {q.min}")
+            continue
+        if q.max is not None and value > q.max:
+            print(f"  ! above max {q.max}")
+            continue
+        return NumberAnswer(value=value)

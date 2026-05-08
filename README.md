@@ -45,11 +45,21 @@ uv venv && uv pip install -e ".[dev]"
 uv pip install -e ".[dev,analytics]"
 
 source .venv/bin/activate
+```
 
-# Persistent encryption key for PII fields (otherwise data written by one
-# process can't be read by the next — a development-only convenience).
+**PII encryption key.** For local development, no setup is needed —
+the engine generates a key on first use and persists it to
+`data/.qst_pii.key` (gitignored, `chmod 0600`) so writes in one shell are
+readable in the next.
+
+For production, set `QST_PII_KEY` from your secret manager:
+
+```bash
 export QST_PII_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ```
+
+The env var always wins over the file. Key rotation / KMS integration is
+the documented next step.
 
 A 60-second tour:
 
@@ -267,10 +277,10 @@ True. This matches the natural English reading and is tested.
    `2024-02-30` rejected; `2024-02-29` (leap year) accepted.
 3. **Single-select requires more than 2 options**, per the spec.
 4. **Multi-select requires at least one selection** at answer time.
-5. **`QST_PII_KEY`** must be set in production. The dev fallback
-   (auto-generate ephemeral key) is intentionally process-local so
-   that data encrypted under it can't survive a restart — fail-fast
-   beats silent corruption.
+5. **`QST_PII_KEY`** is read first; if absent, a key is generated on
+   first use and persisted to `data/.qst_pii.key` (gitignored,
+   `chmod 0600`). For production, set the env var from your secret
+   manager and don't rely on the file.
 6. **No auth in this round**. The `X-Actor` header is advisory and
    recorded in the audit log; it is not authenticated.
 7. **The `analytics` extra** is opt-in. Without it, the
