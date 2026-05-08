@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..domain.filtering import FilterError, parse_filters
@@ -74,6 +74,10 @@ def create_app(store=None) -> FastAPI:
     s = store or default_store()
     # Stash so route handlers can reach it via dependency-injection-lite.
     app.state.store = s
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse(url="/docs")
 
     # --- Templates ------------------------------------------------------
 

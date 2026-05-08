@@ -105,7 +105,9 @@ qst audit verify                     # SHA-256 chain integrity check
 qst gdpr export alice alice.zip      # all of alice's submissions
 qst gdpr delete alice --yes          # permanent, audit-logged
 
-qst api --port 8000                  # HTTP API + /docs (OpenAPI)
+qst api --port 8000
+# then open: http://localhost:8000/docs   ← interactive API explorer
+# (http://localhost:8000/ redirects there automatically)
 ```
 
 ```bash
@@ -121,7 +123,7 @@ Boot:
 
 ```bash
 qst api --host 0.0.0.0 --port 8000
-# OpenAPI: http://localhost:8000/docs
+# then open: http://localhost:8000/docs  (or just / — it redirects)
 ```
 
 Endpoints:
