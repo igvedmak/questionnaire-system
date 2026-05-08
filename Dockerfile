@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir uv
 
 # Copy project files (pyproject first for layer caching)
 COPY pyproject.toml .
-COPY __init__.py .
 COPY questionnaire/ questionnaire/
 
 # Install core + analytics extras (no dev tools)
