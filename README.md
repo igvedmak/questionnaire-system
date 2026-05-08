@@ -17,8 +17,8 @@ toward a credible product foundation.
 | 6 question types: boolean, single-select, multi-select, date, free-text, **number** | `domain/types.py` |
 | **Recursive follow-ups** with two trigger shapes (legacy equality + arbitrary expression AST) | `domain/expression.py`, `domain/flow.py` |
 | Single tree-walker (`resolve_active_questions`) drives CLI, validation, rendering, and the API | `domain/flow.py` |
-| Two-tier validation: structural template rules, per-type answer rules, orphaned-answer detection | `domain/validation.py` |
-| **SQLite store** with indexed answer rows; AND filters push down to SQL | `persistence/sql_store.py` |
+| Two-tier validation: structural template rules, per-type answer rules via **Validator strategy** registry | `domain/validation.py` |
+| **SQLite store** with indexed answer rows; AND/OR/NOT filters push down to SQL | `persistence/sql_store.py` |
 | **Template versioning**: edits append a new version; questionnaires snapshot the version they were created against | `persistence/sql_store.py` |
 | **Submission immutability**: once submitted, answers are frozen at the SQL layer | `persistence/sql_store.py` |
 | **Audit log** with SHA-256 hash chain (tamper-evident) | `domain/audit.py`, audit table |
@@ -28,8 +28,10 @@ toward a credible product foundation.
 | **CSV export** of filtered queries, streamed | `cli/query_cmd.py`, `/questionnaires.csv` |
 | **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional analytics extra | `analytics/clustering.py` |
 | **Migration** from the legacy JSON store via `qst migrate` | `persistence/migrate.py` |
-| **113 tests** covering domain, store, audit, encryption, expression engine, migration, API, and one end-to-end `qst doctor` wrapper | `tests/` |
-| **`qst doctor`** — single command that runs the full manual checklist (CLI + tamper + HTTP API + clustering) and exits 0/1 | `cli/doctor_cmd.py` |
+| **OR / NOT filter combinators**: `OrFilter(filters=[...])` and `NotFilter(inner=...)` nest inside the flat AND list | `domain/filtering.py` |
+| **118 tests** covering domain, store, audit, encryption, expression engine, migration, API, and one end-to-end `qst doctor` wrapper | `tests/` |
+| **`qst doctor`** — 124 checks across 11 sections (types, expressions, filters, lifecycle, audit, GDPR, versioning, validation, migration, HTTP API, analytics); exits 0/1 | `cli/doctor_cmd.py` |
+| **`check_cli.sh`** — 53 bash end-to-end checks with full log output per command; `bash check_cli.sh` | `check_cli.sh` |
 | **`qst answer fill`** — non-interactive submission from a JSON file (CI / agents) | `cli/answer_cmd.py` |
 | **`Makefile`** — one-shot `make install` / `make verify` / `make demo` | top-level |
 
@@ -55,9 +57,10 @@ pytest && qst doctor
 ```
 
 `qst doctor` is the single source of truth that the system works:
-30 checks across CLI, migration, HTTP API, audit-chain tamper detection,
-and (if the analytics extra is installed) real semantic clustering on
-sentence-transformer embeddings.
+124 checks across 11 sections — question types, expression engine, filter
+combinators, submission lifecycle, audit & security, GDPR, template
+versioning, validation errors, migration, HTTP API, and (if the analytics
+extra is installed) real semantic clustering on sentence-transformer embeddings.
 
 **PII encryption key.** Zero setup needed locally — the engine generates
 a key on first use and persists it to `data/.qst_pii.key` (gitignored,
@@ -68,7 +71,7 @@ integration is documented next-step work.
 A 60-second tour:
 
 ```bash
-qst doctor                           # end-to-end self-test (30 checks)
+qst doctor                           # end-to-end self-test (124 checks / 11 sections)
 
 qst template seed                    # two demo templates with PII + nested follow-ups
 qst template list                    # current versions
@@ -87,7 +90,7 @@ qst answer fill tpl_medical /tmp/answers.json --respondent alice
 qst list                             # submitted questionnaires
 qst list -t tpl_medical \
         -i contact_method=Email \
-        -i symptoms=Fever            # AND of three filters
+        -i symptoms=Fever            # AND of three filters (OR/NOT via API/SDK)
 
 qst export submissions.csv -t tpl_medical
 
@@ -189,9 +192,10 @@ tests/
 Run all tests:
 
 ```bash
-pytest                          # 113 tests (~20s — includes the doctor wrapper)
-pytest -m "not slow"            # 112 fast tests (~5s) — the inner-loop subset
+pytest                          # 118 tests (~20s — includes the doctor wrapper)
+pytest -m "not slow"            # 117 fast tests (~5s) — the inner-loop subset
 make verify                     # pytest + `qst doctor` together (one-shot gate)
+bash check_cli.sh               # 53 bash CLI end-to-end checks with full log output
 ```
 
 ---
@@ -205,14 +209,14 @@ sellable engine.
 | Theme | v0.1 → v0.2 |
 |---|---|
 | Storage | Single JSON file → SQLite via SQLAlchemy 2.x; Postgres URL is a 1-line swap |
-| Filtering | O(N) full scan in Python → indexed SQL `EXISTS` per filter; AND folds into one query |
+| Filtering | O(N) full scan in Python → indexed SQL `EXISTS` per filter; AND/OR/NOT fold into one query; `OrFilter`/`NotFilter` added |
 | Follow-ups | Equality only (`when_equals`, `when_option_selected`) → expression AST: `eq/ne/gt/lt/ge/le/in/contains/and/or/not` referencing any answer; legacy shapes still accepted |
 | Question types | 5 → 6 (added `number` with `min`/`max`/`integer`) |
 | Templates | Immutable single version → versioned (edits append, questionnaires reference their snapshot) |
 | Compliance | None → submission immutability, append-only audit log with hash chain, PII encryption at rest, GDPR export/delete |
 | Interface | CLI only → CLI + FastAPI HTTP API |
 | Analytics | None → optional semantic clustering of free-text answers |
-| Tests | 44 → 95 |
+| Tests | 44 → 118 |
 
 ---
 
@@ -242,6 +246,9 @@ Single-select / multi-select answers are stored in a row-per-option
 shape (`answers(questionnaire_id, question_id, option_index, value_text)`)
 with an index on `(question_id, value_text)`. Each `--includes`
 becomes a `WHERE EXISTS (...)`, each `--excludes` a `WHERE NOT EXISTS`.
+`OrFilter` maps to `or_(EXISTS(...), ...)`, `NotFilter` to `not_(...)`,
+all recursively composed by `_filter_to_clause`. The flat AND list,
+plus OR/NOT nesting, all fold into a single SQL query.
 At ~100k questionnaires, filter latency moves from seconds to single-digit
 milliseconds.
 
