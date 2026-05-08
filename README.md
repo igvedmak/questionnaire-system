@@ -182,6 +182,51 @@ qst analytics ai-analyze tpl_medical
 
 ---
 
+## Web UI
+
+A React + Vite + TypeScript + Tailwind CSS frontend lives in [`ui/`](ui/).
+
+### Start in development
+
+```bash
+# Terminal 1 — API
+make api        # FastAPI at http://localhost:8000
+
+# Terminal 2 — UI
+make ui         # Vite dev server at http://localhost:5173
+```
+
+The UI reads `VITE_API_URL` from `ui/.env` (defaults to `http://localhost:8000`).
+CORS is open by default so cross-origin requests work out of the box.
+
+### Production build
+
+```bash
+make ui-build   # outputs to ui/dist/ — serve with any static host
+```
+
+### Features
+
+| Page | What it does |
+|---|---|
+| **Templates** (`/`) | Template library with stats; one-click start; **AI Generate modal** |
+| **Fill** (`/fill/:id`) | Dynamic questionnaire form — all 8 question types, live follow-up reveal, auto-save per answer, progress bar, submit |
+| **Responses** (`/responses`) | Paginated response table; filter by template or draft status; slide-over detail panel |
+
+All 8 question types have purpose-built inputs:
+- Boolean → Yes / No toggle buttons
+- Single-select → Radio-style option cards
+- Multi-select → Checkbox option cards
+- Date → Native date picker
+- Free text → Auto-resizable textarea (PII badge when encrypted)
+- Number → Validated numeric input with min/max hint
+- Rating → Clickable number scale with labels
+- Email → Email input with validation
+
+Follow-up questions animate in below their parent as soon as the trigger fires — no page reload, no manual save.
+
+---
+
 ## HTTP API
 
 Boot:

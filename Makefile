@@ -5,6 +5,9 @@
 # `make verify`        — pytest (158 tests) + qst doctor (124 checks).
 # `make test`          — pytest only.
 # `make api`           — start the FastAPI server on :8000.
+# `make ui`            — start the Vite UI dev server on :5173 (needs `make api` running).
+# `make ui-install`    — install UI npm dependencies.
+# `make ui-build`      — production build of the UI to ui/dist/.
 # `make demo`          — seed templates + submit a sample questionnaire.
 # `make clean`         — wipe venv + DB + caches.
 #
@@ -22,7 +25,7 @@ QST   := $(BIN)/qst
 # Prefer uv if available (fast); fall back to stdlib venv + pip.
 UV := $(shell command -v uv 2>/dev/null)
 
-.PHONY: install test verify api demo clean help docker-build docker-up docker-down docker-logs
+.PHONY: install test verify api ui ui-install ui-build demo clean help docker-build docker-up docker-down docker-logs
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | grep -v '^\.' | sort
@@ -51,6 +54,15 @@ verify: test
 api:
 	$(QST) api --host 0.0.0.0 --port 8000
 
+ui-install:
+	cd ui && npm install
+
+ui-build:
+	cd ui && npm run build
+
+ui: ui-install
+	cd ui && npm run dev
+
 demo:
 	@rm -f data/db.sqlite data/db.sqlite-*
 	$(QST) template seed
@@ -68,6 +80,7 @@ docker-build:
 docker-up:
 	docker compose up -d
 	@echo "  API running at http://localhost:8000/docs"
+	@echo "  UI  running at http://localhost:5173  (make ui for local dev)"
 
 docker-down:
 	docker compose down
@@ -76,4 +89,4 @@ docker-logs:
 	docker compose logs -f api
 
 clean:
-	rm -rf $(VENV) .pytest_cache **/__pycache__ data/db.sqlite data/db.sqlite-* data/.qst_pii.key
+	rm -rf $(VENV) .pytest_cache **/__pycache__ data/db.sqlite data/db.sqlite-* data/.qst_pii.key ui/dist ui/.node_modules

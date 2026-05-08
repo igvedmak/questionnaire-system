@@ -17,3 +17,5 @@ data/.qst_pii.key
 .DS_Store
 *.zip
 *.csv
+ui/node_modules/
+ui/dist/
