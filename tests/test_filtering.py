@@ -10,6 +10,8 @@ from questionnaire.domain.filtering import (
     ExcludesFilter,
     FilterError,
     IncludesFilter,
+    NotFilter,
+    OrFilter,
     TemplateFilter,
     apply_filters,
     parse_filters,
@@ -195,3 +197,71 @@ def test_parse_filters_accepts_multi_select(templates):
         IncludesFilter(question_id="tags", value="a"),
         ExcludesFilter(question_id="tags", value="b"),
     ]
+
+
+# --- OrFilter / NotFilter ------------------------------------------------
+
+def test_or_filter_matches_either_branch(templates):
+    """OR(includes_red, includes_blue) should match questionnaires with either color."""
+    qns = [
+        _qn("a", "t1", {"color": SingleSelectAnswer(value="red")}),
+        _qn("b", "t1", {"color": SingleSelectAnswer(value="blue")}),
+        _qn("c", "t1", {"color": SingleSelectAnswer(value="green")}),
+    ]
+    out = apply_filters(qns, [
+        OrFilter(filters=[
+            IncludesFilter(question_id="color", value="red"),
+            IncludesFilter(question_id="color", value="blue"),
+        ]),
+    ])
+    assert sorted(q.id for q in out) == ["a", "b"]
+
+
+def test_not_filter_inverts_includes(templates):
+    """NOT(includes_red) should behave identically to excludes_red."""
+    qns = [
+        _qn("a", "t1", {"color": SingleSelectAnswer(value="red")}),
+        _qn("b", "t1", {"color": SingleSelectAnswer(value="blue")}),
+    ]
+    out_not = apply_filters(qns, [NotFilter(inner=IncludesFilter(question_id="color", value="red"))])
+    out_exc = apply_filters(qns, [ExcludesFilter(question_id="color", value="red")])
+    assert [q.id for q in out_not] == [q.id for q in out_exc] == ["b"]
+
+
+def test_or_filter_with_template_filter(templates):
+    """OR(template_t1, template_t2) should return questionnaires from both templates."""
+    qns = [
+        _qn("a", "t1", {}),
+        _qn("b", "t2", {}),
+        _qn("c", "t1", {}),
+    ]
+    out = apply_filters(qns, [
+        OrFilter(filters=[TemplateFilter(template_id="t1"), TemplateFilter(template_id="t2")]),
+    ])
+    assert sorted(q.id for q in out) == ["a", "b", "c"]
+
+
+def test_not_filter_on_missing_answer(templates):
+    """NOT(includes) on a question that was never answered should return True
+    (mirrors ExcludesFilter semantics for unreached questions)."""
+    not_reached = _qn("a", "t2", {"has_pet": BooleanAnswer(value=False)})
+    out = apply_filters([not_reached], [NotFilter(inner=IncludesFilter(question_id="pet_kind", value="dog"))])
+    assert [q.id for q in out] == ["a"]
+
+
+def test_nested_or_inside_and(templates):
+    """Flat AND combining an OrFilter with a TemplateFilter: template=t1 AND (red OR blue)."""
+    qns = [
+        _qn("a", "t1", {"color": SingleSelectAnswer(value="red")}),
+        _qn("b", "t1", {"color": SingleSelectAnswer(value="blue")}),
+        _qn("c", "t1", {"color": SingleSelectAnswer(value="green")}),
+        _qn("d", "t2", {"color": SingleSelectAnswer(value="red")}),
+    ]
+    out = apply_filters(qns, [
+        TemplateFilter(template_id="t1"),
+        OrFilter(filters=[
+            IncludesFilter(question_id="color", value="red"),
+            IncludesFilter(question_id="color", value="blue"),
+        ]),
+    ])
+    assert sorted(q.id for q in out) == ["a", "b"]

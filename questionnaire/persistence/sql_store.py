@@ -36,6 +36,7 @@ from sqlalchemy import (
     delete,
     exists,
     not_,
+    or_,
     select,
 )
 from sqlalchemy.orm import Session
@@ -53,6 +54,8 @@ from ..domain.filtering import (
     ExcludesFilter,
     Filter,
     IncludesFilter,
+    NotFilter,
+    OrFilter,
     TemplateFilter,
 )
 from ..domain.types import (
@@ -347,28 +350,7 @@ class SqlStore:
             if not include_drafts:
                 stmt = stmt.where(QuestionnaireRow.submitted_at.isnot(None))
             for f in filters:
-                if isinstance(f, TemplateFilter):
-                    stmt = stmt.where(QuestionnaireRow.template_id == f.template_id)
-                elif isinstance(f, IncludesFilter):
-                    sub = (
-                        select(AnswerRow.questionnaire_id)
-                        .where(and_(
-                            AnswerRow.questionnaire_id == QuestionnaireRow.id,
-                            AnswerRow.question_id == f.question_id,
-                            AnswerRow.value_text == f.value,
-                        ))
-                    )
-                    stmt = stmt.where(exists(sub))
-                elif isinstance(f, ExcludesFilter):
-                    sub = (
-                        select(AnswerRow.questionnaire_id)
-                        .where(and_(
-                            AnswerRow.questionnaire_id == QuestionnaireRow.id,
-                            AnswerRow.question_id == f.question_id,
-                            AnswerRow.value_text == f.value,
-                        ))
-                    )
-                    stmt = stmt.where(not_(exists(sub)))
+                stmt = stmt.where(_filter_to_clause(f))
             stmt = stmt.order_by(QuestionnaireRow.created_at)
 
             qn_rows = s.execute(stmt).scalars().all()
@@ -399,22 +381,7 @@ class SqlStore:
             if not include_drafts:
                 stmt = stmt.where(QuestionnaireRow.submitted_at.isnot(None))
             for f in filters:
-                if isinstance(f, TemplateFilter):
-                    stmt = stmt.where(QuestionnaireRow.template_id == f.template_id)
-                elif isinstance(f, IncludesFilter):
-                    sub = select(AnswerRow.questionnaire_id).where(and_(
-                        AnswerRow.questionnaire_id == QuestionnaireRow.id,
-                        AnswerRow.question_id == f.question_id,
-                        AnswerRow.value_text == f.value,
-                    ))
-                    stmt = stmt.where(exists(sub))
-                elif isinstance(f, ExcludesFilter):
-                    sub = select(AnswerRow.questionnaire_id).where(and_(
-                        AnswerRow.questionnaire_id == QuestionnaireRow.id,
-                        AnswerRow.question_id == f.question_id,
-                        AnswerRow.value_text == f.value,
-                    ))
-                    stmt = stmt.where(not_(exists(sub)))
+                stmt = stmt.where(_filter_to_clause(f))
             stmt = stmt.order_by(QuestionnaireRow.created_at).execution_options(
                 yield_per=chunk_size,
             )
@@ -600,6 +567,40 @@ class SqlStore:
 
 
 # --- Pure helpers --------------------------------------------------------
+
+def _filter_to_clause(f: Filter) -> Any:
+    """Recursively convert a Filter into a SQLAlchemy WHERE clause element.
+
+    Supports nesting via OrFilter / NotFilter so callers just do:
+        stmt = stmt.where(_filter_to_clause(f))
+    """
+    if isinstance(f, TemplateFilter):
+        return QuestionnaireRow.template_id == f.template_id
+
+    if isinstance(f, IncludesFilter):
+        sub = select(AnswerRow.questionnaire_id).where(and_(
+            AnswerRow.questionnaire_id == QuestionnaireRow.id,
+            AnswerRow.question_id == f.question_id,
+            AnswerRow.value_text == f.value,
+        ))
+        return exists(sub)
+
+    if isinstance(f, ExcludesFilter):
+        sub = select(AnswerRow.questionnaire_id).where(and_(
+            AnswerRow.questionnaire_id == QuestionnaireRow.id,
+            AnswerRow.question_id == f.question_id,
+            AnswerRow.value_text == f.value,
+        ))
+        return not_(exists(sub))
+
+    if isinstance(f, OrFilter):
+        return or_(*[_filter_to_clause(sf) for sf in f.filters])
+
+    if isinstance(f, NotFilter):
+        return not_(_filter_to_clause(f.inner))
+
+    raise StoreError(f"unknown filter type: {type(f).__name__}")
+
 
 def _pii_question_ids(template: Template) -> set[str]:
     out: set[str] = set()

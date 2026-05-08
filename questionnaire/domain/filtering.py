@@ -1,11 +1,13 @@
 """Querying and filtering of submitted questionnaires.
 
-Filters AND-combine. Three kinds:
+Filters compose via AND (the default flat list), OR, and NOT:
 
 - ``TemplateFilter``: questionnaire is an instance of the given template.
 - ``IncludesFilter``: questionnaire's answer to question X equals (single-select)
   or contains (multi-select) the value Y.
 - ``ExcludesFilter``: the negation of IncludesFilter.
+- ``OrFilter(filters=[f1, f2, ...])``: matches if ANY sub-filter matches.
+- ``NotFilter(inner=f)``: matches if the sub-filter does NOT match.
 
 Includes/Excludes are only valid against single-select and multi-select
 questions; ``parse_filters`` enforces this by looking up the question across
@@ -51,7 +53,19 @@ class ExcludesFilter:
     value: str
 
 
-Filter = Union[TemplateFilter, IncludesFilter, ExcludesFilter]
+@dataclass
+class OrFilter:
+    """Matches if ANY of the sub-filters match (logical OR)."""
+    filters: list["Filter"]
+
+
+@dataclass
+class NotFilter:
+    """Matches if the sub-filter does NOT match (logical NOT)."""
+    inner: "Filter"
+
+
+Filter = Union[TemplateFilter, IncludesFilter, ExcludesFilter, OrFilter, NotFilter]
 
 
 class FilterError(Exception):
@@ -91,6 +105,12 @@ def _match(q: Questionnaire, f: Filter) -> bool:
         if isinstance(ans, MultiSelectAnswer):
             return f.value not in ans.value
         return True
+
+    if isinstance(f, OrFilter):
+        return any(_match(q, sf) for sf in f.filters)
+
+    if isinstance(f, NotFilter):
+        return not _match(q, f.inner)
 
     raise FilterError(f"unknown filter type: {type(f).__name__}")
 

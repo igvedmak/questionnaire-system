@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import abc
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -18,13 +19,9 @@ from .flow import resolve_active_questions
 from .types import (
     AnswerValue,
     BoolFollowUp,
-    BooleanAnswer,
     BooleanQuestion,
     DateAnswer,
-    DateQuestion,
     ExprFollowUp,
-    FreeTextAnswer,
-    FreeTextQuestion,
     MultiSelectAnswer,
     MultiSelectQuestion,
     NumberAnswer,
@@ -193,19 +190,37 @@ def validate_for_submission(
     return result
 
 
-def _check_answer(q: Question, ans: AnswerValue) -> str | None:
-    if q.type != ans.type:
-        return f"type mismatch: question is {q.type}, answer is {ans.type}"
+# --- Validator strategy --------------------------------------------------
 
-    if isinstance(q, BooleanQuestion) and isinstance(ans, BooleanAnswer):
+class AnswerValidator(abc.ABC):
+    """Per-type answer validation strategy.
+
+    Adding a new question type means adding a new subclass and registering
+    it in ``_VALIDATORS`` — existing validators are untouched.
+    """
+
+    @abc.abstractmethod
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        ...
+
+
+class _BooleanValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        del q, ans
         return None
 
-    if isinstance(q, SingleSelectQuestion) and isinstance(ans, SingleSelectAnswer):
+
+class _SingleSelectValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        assert isinstance(q, SingleSelectQuestion) and isinstance(ans, SingleSelectAnswer)
         if ans.value not in q.options:
             return f"value '{ans.value}' is not one of the options {q.options}"
         return None
 
-    if isinstance(q, MultiSelectQuestion) and isinstance(ans, MultiSelectAnswer):
+
+class _MultiSelectValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        assert isinstance(q, MultiSelectQuestion) and isinstance(ans, MultiSelectAnswer)
         if len(ans.value) == 0:
             return "multi-select requires at least one selection"
         if len(set(ans.value)) != len(ans.value):
@@ -215,17 +230,26 @@ def _check_answer(q: Question, ans: AnswerValue) -> str | None:
             return f"selections {invalid} are not in the options {q.options}"
         return None
 
-    if isinstance(q, DateQuestion) and isinstance(ans, DateAnswer):
+
+class _DateValidator(AnswerValidator):
+    def check(self, _q: Question, ans: AnswerValue) -> str | None:
+        assert isinstance(ans, DateAnswer)
         try:
             datetime.strptime(ans.value, "%Y-%m-%d")
         except ValueError:
             return f"invalid date '{ans.value}', expected YYYY-MM-DD"
         return None
 
-    if isinstance(q, FreeTextQuestion) and isinstance(ans, FreeTextAnswer):
+
+class _FreeTextValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        del q, ans
         return None
 
-    if isinstance(q, NumberQuestion) and isinstance(ans, NumberAnswer):
+
+class _NumberValidator(AnswerValidator):
+    def check(self, q: Question, ans: AnswerValue) -> str | None:
+        assert isinstance(q, NumberQuestion) and isinstance(ans, NumberAnswer)
         if q.integer and not float(ans.value).is_integer():
             return f"value {ans.value} is not an integer"
         if q.min is not None and ans.value < q.min:
@@ -234,4 +258,21 @@ def _check_answer(q: Question, ans: AnswerValue) -> str | None:
             return f"value {ans.value} is above max {q.max}"
         return None
 
-    return f"unhandled question/answer combination: {q.type}/{ans.type}"
+
+_VALIDATORS: dict[str, AnswerValidator] = {
+    "boolean": _BooleanValidator(),
+    "single_select": _SingleSelectValidator(),
+    "multi_select": _MultiSelectValidator(),
+    "date": _DateValidator(),
+    "free_text": _FreeTextValidator(),
+    "number": _NumberValidator(),
+}
+
+
+def _check_answer(q: Question, ans: AnswerValue) -> str | None:
+    if q.type != ans.type:
+        return f"type mismatch: question is {q.type}, answer is {ans.type}"
+    validator = _VALIDATORS.get(q.type)
+    if validator is None:
+        return f"unhandled question/answer combination: {q.type}/{ans.type}"
+    return validator.check(q, ans)
