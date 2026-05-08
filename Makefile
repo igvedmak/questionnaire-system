@@ -2,7 +2,7 @@
 #
 # Local dev:
 # `make install`       — create venv and install everything (analytics extra included).
-# `make verify`        — pytest (118 tests) + qst doctor (124 checks).
+# `make verify`        — pytest (158 tests) + qst doctor (124 checks).
 # `make test`          — pytest only.
 # `make api`           — start the FastAPI server on :8000.
 # `make demo`          — seed templates + submit a sample questionnaire.

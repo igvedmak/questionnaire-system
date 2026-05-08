@@ -30,6 +30,9 @@ analytics = [
     "numpy>=1.26",
     "scikit-learn>=1.4",
 ]
+llm = [
+    "anthropic>=0.40",
+]
 
 [project.scripts]
 qst = "questionnaire.cli.main:app"

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     webhook_timeout_s: float = 5.0
     max_free_text_length: int = 10_000
 
+    # LLM integration (optional — requires the 'llm' extra)
+    llm_api_key: str = Field(default="", description="Anthropic API key for AI-powered features")
+    llm_model: str = Field(default="claude-opus-4-7", description="Claude model for AI-powered features")
+
     model_config = ConfigDict(
         env_prefix="QST_",
         env_file=".env",

@@ -138,6 +138,41 @@ def analytics_cluster(
         typer.echo(f"    exemplar: {c.exemplar_text!r}")
 
 
+@analytics_app.command("ai-analyze")
+def analytics_ai_analyze(
+    template_id: str,
+    include_drafts: bool = typer.Option(False, "--include-drafts"),
+):
+    """Stream an AI-generated analysis report for all submitted responses to a template.
+
+    Requires QST_LLM_API_KEY to be set (Anthropic API key).
+    """
+    store = default_store()
+    tpl = store.get_template(template_id)
+    if tpl is None:
+        typer.echo(f"unknown template id: {template_id!r}", err=True)
+        raise typer.Exit(code=1)
+
+    from ..domain.filtering import apply_filters
+    from ..domain.types import Questionnaire
+    all_qns = store.query_questionnaires([], include_drafts=include_drafts)
+    qns = [q for q in all_qns if q.template_id == template_id]
+
+    if not qns:
+        typer.echo("no responses found for this template")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Analysing {len(qns)} response(s) for '{tpl.title}' using AI …\n")
+    try:
+        from ..llm.analyze import stream_analysis
+        for chunk in stream_analysis(tpl, qns):
+            typer.echo(chunk, nl=False)
+    except RuntimeError as e:
+        typer.echo(f"\nerror: {e}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo()  # trailing newline
+
+
 # --- webhook -------------------------------------------------------------
 
 @webhook_app.command("add")

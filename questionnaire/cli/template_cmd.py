@@ -14,10 +14,12 @@ from ..domain.types import (
     BoolFollowUp,
     BooleanQuestion,
     DateQuestion,
+    EmailQuestion,
     FreeTextQuestion,
     MultiSelectQuestion,
     NumberQuestion,
     Question,
+    RatingQuestion,
     SelectFollowUp,
     SingleSelectQuestion,
     Template,
@@ -129,16 +131,55 @@ def duplicate(
 
 @app.command("seed")
 def seed(actor: str = typer.Option(None, "--actor")):
-    """Load two demo templates with nested follow-ups."""
+    """Load demo templates covering 6 domains with nested follow-ups."""
     store = default_store()
     existing = {t.id for t in store.list_templates()}
-    seeds = [_seed_medical(), _seed_travel()]
+    seeds = [
+        _seed_medical(),
+        _seed_travel(),
+        _seed_hr_onboarding(),
+        _seed_product_feedback(),
+        _seed_event_registration(),
+        _seed_customer_support(),
+    ]
     for tpl in seeds:
         if tpl.id in existing:
             typer.echo(f"  skip {tpl.id}: already exists")
             continue
         store.save_template(tpl, actor=actor)
         typer.echo(f"  seeded {tpl.id}: {tpl.title!r}")
+
+
+@app.command("ai-generate")
+def ai_generate(
+    description: str = typer.Argument(..., help="Natural language description of the questionnaire"),
+    save: bool = typer.Option(True, "--save/--dry-run", help="Save to database (default) or just print"),
+    actor: str = typer.Option(None, "--actor"),
+):
+    """Generate a questionnaire template from a natural-language description using AI.
+
+    Requires QST_LLM_API_KEY to be set (Anthropic API key).
+    """
+    typer.echo(f"Generating template for: {description!r} …")
+    try:
+        from ..llm.generate import generate_template
+        tpl = generate_template(description)
+    except RuntimeError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\nGenerated: {tpl.id}  |  {tpl.title}")
+    for line in _render_questions(tpl.questions, indent=1):
+        typer.echo(line)
+
+    if save:
+        store = default_store()
+        store.save_template(tpl, actor=actor)
+        typer.echo(f"\nsaved: {tpl.id}")
+    else:
+        import json
+        typer.echo("\n--- JSON (dry-run, not saved) ---")
+        typer.echo(tpl.model_dump_json(indent=2))
 
 
 # --- Rendering helpers ----------------------------------------------------
@@ -277,6 +318,255 @@ def _seed_travel() -> Template:
             FreeTextQuestion(
                 id="favorite_moment",
                 prompt="Describe your favorite moment from the trip",
+            ),
+        ],
+    )
+
+
+def _seed_hr_onboarding() -> Template:
+    return Template(
+        id="tpl_hr_onboarding",
+        title="Employee Onboarding",
+        description="Collect new-hire information and preferences on day 1.",
+        created_at=_now_iso(),
+        questions=[
+            FreeTextQuestion(id="full_name", prompt="Full legal name", pii=True),
+            EmailQuestion(id="work_email", prompt="Work email address", pii=True),
+            DateQuestion(id="start_date", prompt="Start date"),
+            SingleSelectQuestion(
+                id="employment_type",
+                prompt="Employment type",
+                options=["Full-time", "Part-time", "Contractor", "Intern"],
+            ),
+            SingleSelectQuestion(
+                id="work_location",
+                prompt="Primary work location",
+                options=["On-site", "Remote", "Hybrid"],
+                follow_ups=[SelectFollowUp(
+                    when_option_selected="On-site",
+                    questions=[SingleSelectQuestion(
+                        id="office_site",
+                        prompt="Which office?",
+                        options=["HQ", "East Hub", "West Hub", "International"],
+                    )],
+                )],
+            ),
+            MultiSelectQuestion(
+                id="equipment_needed",
+                prompt="Equipment needed (select all that apply)",
+                options=["Laptop", "Monitor", "Keyboard", "Mouse", "Headset", "Docking station"],
+            ),
+            BooleanQuestion(
+                id="has_dietary",
+                prompt="Do you have dietary restrictions or preferences?",
+                follow_ups=[BoolFollowUp(
+                    when_equals=True,
+                    questions=[FreeTextQuestion(
+                        id="dietary_details",
+                        prompt="Please describe your dietary needs",
+                    )],
+                )],
+            ),
+            SingleSelectQuestion(
+                id="shirt_size",
+                prompt="Company swag shirt size",
+                options=["XS", "S", "M", "L", "XL", "XXL"],
+            ),
+            RatingQuestion(
+                id="onboarding_experience",
+                prompt="How would you rate your onboarding experience so far?",
+                min_val=1, max_val=5,
+                min_label="Very poor", max_label="Excellent",
+            ),
+            FreeTextQuestion(id="first_day_feedback", prompt="Any questions or comments for HR?", required=False),
+        ],
+    )
+
+
+def _seed_product_feedback() -> Template:
+    return Template(
+        id="tpl_product_feedback",
+        title="Product Feedback Survey",
+        description="Net Promoter Score + qualitative feedback for product teams.",
+        created_at=_now_iso(),
+        questions=[
+            RatingQuestion(
+                id="nps",
+                prompt="How likely are you to recommend our product to a colleague? (0 = not at all, 10 = extremely likely)",
+                min_val=0, max_val=10,
+                min_label="Not at all likely", max_label="Extremely likely",
+            ),
+            SingleSelectQuestion(
+                id="usage_frequency",
+                prompt="How often do you use the product?",
+                options=["Daily", "Several times a week", "Once a week", "A few times a month", "Rarely"],
+            ),
+            MultiSelectQuestion(
+                id="features_used",
+                prompt="Which features do you use most? (select all that apply)",
+                options=["Dashboard", "Reports", "Integrations", "API", "Mobile app", "Collaboration tools"],
+            ),
+            RatingQuestion(
+                id="ease_of_use",
+                prompt="How easy is the product to use?",
+                min_val=1, max_val=5,
+                min_label="Very difficult", max_label="Very easy",
+            ),
+            BooleanQuestion(
+                id="encountered_bugs",
+                prompt="Have you encountered any bugs or issues in the past 30 days?",
+                follow_ups=[BoolFollowUp(
+                    when_equals=True,
+                    questions=[FreeTextQuestion(
+                        id="bug_description",
+                        prompt="Please describe the issue(s) you encountered",
+                    )],
+                )],
+            ),
+            SingleSelectQuestion(
+                id="biggest_pain_point",
+                prompt="What is your biggest pain point with the product?",
+                options=["Performance", "Missing features", "Confusing UI", "Poor documentation", "Pricing", "Other"],
+                follow_ups=[SelectFollowUp(
+                    when_option_selected="Other",
+                    questions=[FreeTextQuestion(
+                        id="pain_point_other",
+                        prompt="Please describe your pain point",
+                    )],
+                )],
+            ),
+            FreeTextQuestion(
+                id="improvement_suggestion",
+                prompt="What one thing would most improve the product for you?",
+                required=False,
+            ),
+        ],
+    )
+
+
+def _seed_event_registration() -> Template:
+    return Template(
+        id="tpl_event_registration",
+        title="Conference Registration",
+        description="Collect attendee information and session preferences for a multi-track conference.",
+        created_at=_now_iso(),
+        questions=[
+            FreeTextQuestion(id="attendee_name", prompt="Full name", pii=True),
+            EmailQuestion(id="attendee_email", prompt="Email address", pii=True),
+            FreeTextQuestion(id="organisation", prompt="Organisation / company"),
+            SingleSelectQuestion(
+                id="ticket_type",
+                prompt="Ticket type",
+                options=["General admission", "VIP", "Speaker", "Sponsor", "Press"],
+            ),
+            MultiSelectQuestion(
+                id="tracks",
+                prompt="Which tracks are you most interested in?",
+                options=["Engineering", "Product", "Design", "Data & AI", "Leadership", "Community"],
+            ),
+            SingleSelectQuestion(
+                id="attendance_mode",
+                prompt="Attendance mode",
+                options=["In-person", "Virtual", "Hybrid (both days)"],
+                follow_ups=[SelectFollowUp(
+                    when_option_selected="In-person",
+                    questions=[
+                        BooleanQuestion(
+                            id="needs_hotel",
+                            prompt="Do you need hotel recommendations?",
+                        ),
+                        SingleSelectQuestion(
+                            id="dietary_pref",
+                            prompt="Dietary preference for catered meals",
+                            options=["No restriction", "Vegetarian", "Vegan", "Gluten-free", "Halal", "Kosher"],
+                        ),
+                    ],
+                )],
+            ),
+            BooleanQuestion(
+                id="speaking",
+                prompt="Are you submitting a talk or workshop proposal?",
+                follow_ups=[BoolFollowUp(
+                    when_equals=True,
+                    questions=[FreeTextQuestion(
+                        id="talk_title",
+                        prompt="Proposed session title and 1-2 sentence abstract",
+                    )],
+                )],
+            ),
+            FreeTextQuestion(id="special_requests", prompt="Accessibility or special requirements", required=False),
+        ],
+    )
+
+
+def _seed_customer_support() -> Template:
+    return Template(
+        id="tpl_customer_support",
+        title="Customer Support Ticket",
+        description="Gather structured information when a customer opens a support request.",
+        created_at=_now_iso(),
+        questions=[
+            FreeTextQuestion(id="contact_name", prompt="Your name", pii=True),
+            EmailQuestion(id="contact_email", prompt="Contact email", pii=True),
+            SingleSelectQuestion(
+                id="issue_category",
+                prompt="What type of issue are you experiencing?",
+                options=["Account / login", "Billing", "Technical / bug", "Feature request", "Performance", "Other"],
+                follow_ups=[
+                    SelectFollowUp(
+                        when_option_selected="Technical / bug",
+                        questions=[
+                            SingleSelectQuestion(
+                                id="affected_platform",
+                                prompt="Which platform is affected?",
+                                options=["Web browser", "iOS app", "Android app", "API / webhooks", "All platforms"],
+                            ),
+                            FreeTextQuestion(
+                                id="steps_to_reproduce",
+                                prompt="Steps to reproduce the issue",
+                            ),
+                        ],
+                    ),
+                    SelectFollowUp(
+                        when_option_selected="Billing",
+                        questions=[FreeTextQuestion(
+                            id="invoice_number",
+                            prompt="Invoice or order number (if applicable)",
+                            required=False,
+                        )],
+                    ),
+                    SelectFollowUp(
+                        when_option_selected="Other",
+                        questions=[FreeTextQuestion(
+                            id="issue_other_detail",
+                            prompt="Please describe your issue",
+                        )],
+                    ),
+                ],
+            ),
+            SingleSelectQuestion(
+                id="severity",
+                prompt="How severely is this affecting your work?",
+                options=["Blocking — cannot work", "Major — significantly impaired", "Minor — workaround exists", "Low — cosmetic or question"],
+            ),
+            BooleanQuestion(
+                id="first_occurrence",
+                prompt="Is this the first time you have experienced this issue?",
+                follow_ups=[BoolFollowUp(
+                    when_equals=False,
+                    questions=[DateQuestion(
+                        id="first_occurrence_date",
+                        prompt="Approximately when did you first notice this issue?",
+                    )],
+                )],
+            ),
+            FreeTextQuestion(id="additional_context", prompt="Any additional context, screenshots, or logs to share?", required=False),
+            RatingQuestion(
+                id="support_satisfaction",
+                prompt="How satisfied are you with our support experience so far?",
+                min_val=1, max_val=5,
+                min_label="Very dissatisfied", max_label="Very satisfied",
+                required=False,
             ),
         ],
     )

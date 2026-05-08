@@ -3,7 +3,8 @@
 A programmable questionnaire engine — templates with expression-based
 follow-ups, instances answered through a CLI or HTTP API, indexed
 filtering, tamper-evident audit log, encrypted PII fields, GDPR
-export/delete, and semantic clustering of free-text answers.
+export/delete, semantic clustering of free-text answers, and
+**AI-powered template generation and response analysis**.
 
 Implements the original home-assignment spec in full and extends it
 toward a credible product foundation.
@@ -14,7 +15,7 @@ toward a credible product foundation.
 
 | Feature | Where |
 |---|---|
-| 6 question types: boolean, single-select, multi-select, date, free-text, **number** | `domain/types.py` |
+| **8 question types**: boolean, single-select, multi-select, date, free-text, number, **rating**, **email** | `domain/types.py` |
 | **Recursive follow-ups** with two trigger shapes (legacy equality + arbitrary expression AST) | `domain/expression.py`, `domain/flow.py` |
 | Single tree-walker (`resolve_active_questions`) drives CLI, validation, rendering, and the API | `domain/flow.py` |
 | Two-tier validation: structural template rules, per-type answer rules via **Validator strategy** registry | `domain/validation.py` |
@@ -25,11 +26,17 @@ toward a credible product foundation.
 | **PII encryption at rest** (Fernet) for fields flagged `pii: true` | `domain/encryption.py` |
 | **GDPR export & delete** by respondent id | `persistence/sql_store.py`, `/respondents/{id}` endpoints |
 | **HTTP API** (FastAPI) mirroring the CLI 1:1, OpenAPI auto-generated | `api/app.py` |
+| **API key auth** — set `QST_API_KEYS` to enable; `X-API-Key` header required for writes | `api/app.py` |
 | **CSV export** of filtered queries, streamed | `cli/query_cmd.py`, `/questionnaires.csv` |
-| **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional analytics extra | `analytics/clustering.py` |
+| **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional `analytics` extra | `analytics/clustering.py` |
+| **AI template generation** — natural-language description → validated Template via Claude | `llm/generate.py` |
+| **AI response analysis** — streaming narrative report over submitted responses via Claude | `llm/analyze.py` |
+| **Webhooks** — HMAC-signed HTTP callbacks for `questionnaire.submit` and `gdpr.delete` events | `persistence/sql_store.py`, `/webhooks` endpoints |
+| **Template duplication** — clone any template to a new id | `persistence/sql_store.py`, `/templates/{id}/duplicate` |
+| **Template stats** — submission counts and completion rate per template | `/templates/{id}/stats` |
 | **Migration** from the legacy JSON store via `qst migrate` | `persistence/migrate.py` |
 | **OR / NOT filter combinators**: `OrFilter(filters=[...])` and `NotFilter(inner=...)` nest inside the flat AND list | `domain/filtering.py` |
-| **118 tests** covering domain, store, audit, encryption, expression engine, migration, API, and one end-to-end `qst doctor` wrapper | `tests/` |
+| **158 tests** covering domain, store, audit, encryption, expression engine, migration, API, and one end-to-end `qst doctor` wrapper | `tests/` |
 | **`qst doctor`** — 124 checks across 11 sections (types, expressions, filters, lifecycle, audit, GDPR, versioning, validation, migration, HTTP API, analytics); exits 0/1 | `cli/doctor_cmd.py` |
 | **`check_cli.sh`** — 53 bash end-to-end checks with full log output per command; `bash check_cli.sh` | `check_cli.sh` |
 | **`qst answer fill`** — non-interactive submission from a JSON file (CI / agents) | `cli/answer_cmd.py` |
@@ -44,7 +51,7 @@ Requires Python 3.11+.
 ### Option A — Docker (recommended for a quick start)
 
 ```bash
-cp .env.example .env          # set QST_PII_KEY and optional HF_TOKEN
+cp .env.example .env          # set QST_PII_KEY and optional HF_TOKEN, QST_LLM_API_KEY
 make docker-up                # builds image + starts API at http://localhost:8000
 ```
 
@@ -62,7 +69,7 @@ One-off commands via Docker:
 
 ```bash
 docker compose run --rm api qst doctor          # 124-check self-test
-docker compose run --rm api qst template seed   # seed demo templates
+docker compose run --rm api qst template seed   # seed 6 demo templates
 docker compose run --rm api qst audit verify    # check hash chain
 ```
 
@@ -71,7 +78,7 @@ docker compose run --rm api qst audit verify    # check hash chain
 ```bash
 make install               # creates .venv, installs core + dev + analytics extras
 source .venv/bin/activate  # put qst on PATH — required once per shell session
-make verify                # pytest (118 tests) + qst doctor (124 checks)
+make verify                # pytest (158 tests) + qst doctor (124 checks)
 ```
 
 > `make install` installs `qst` into `.venv/bin/` but does **not** activate the venv.
@@ -86,6 +93,22 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,analytics]"
 
 source .venv/bin/activate
 pytest && qst doctor
+```
+
+#### Optional extras
+
+| Extra | Installs | Enables |
+|---|---|---|
+| `analytics` | sentence-transformers, HDBSCAN, numpy, scikit-learn | Semantic clustering (`qst analytics cluster`, `/analytics/.../clusters`) |
+| `llm` | anthropic | AI template generation (`qst template ai-generate`) + AI analysis (`qst analytics ai-analyze`) |
+| `dev` | pytest, httpx | Test suite |
+
+```bash
+# All extras:
+pip install -e ".[dev,analytics,llm]"
+
+# LLM only:
+pip install -e ".[llm]"
 ```
 
 ### PII encryption key
@@ -105,7 +128,7 @@ Run these after `source .venv/bin/activate` (or prefix each with `docker compose
 ```bash
 qst doctor                           # 124-check self-test — exits 0 on green
 
-qst template seed                    # seed two demo templates (tpl_medical, tpl_travel)
+qst template seed                    # seed 6 demo templates
 qst template list                    # list current versions
 qst template show tpl_medical        # show questions + follow-up tree
 qst template show tpl_medical -v 1   # show a specific version
@@ -144,6 +167,19 @@ qst api --port 8000                  # start HTTP API
 qst migrate
 ```
 
+#### AI-powered features (requires `pip install -e ".[llm]"` and `QST_LLM_API_KEY`)
+
+```bash
+# Generate a template from a plain-English description:
+qst template ai-generate "Employee satisfaction survey covering workload, culture, and career growth"
+
+# Dry-run (preview without saving):
+qst template ai-generate "Event feedback form" --dry-run
+
+# Stream an AI analysis report of all submitted responses:
+qst analytics ai-analyze tpl_medical
+```
+
 ---
 
 ## HTTP API
@@ -157,30 +193,38 @@ qst api --host 0.0.0.0 --port 8000
 # then open: http://localhost:8000   (redirects to /docs automatically)
 ```
 
+Auth: set `QST_API_KEYS=key1,key2` to require `X-API-Key: <key>` on write endpoints.
+Read endpoints are always public. The `X-Actor` header (optional) is recorded in the audit log.
+
 Endpoints:
 
 | Method | Path | Notes |
 |---|---|---|
+| GET | `/health` | DB connectivity check |
 | POST | `/templates` | New template (auto v1) or new version (if id is reused) |
 | GET | `/templates` | List current versions |
 | GET | `/templates/{id}` | `?version=` for a specific version |
 | GET | `/templates/{id}/versions` | All versions |
+| GET | `/templates/{id}/stats` | Submission count and completion rate |
+| POST | `/templates/{id}/duplicate` | Clone to a new id (`?new_id=`) |
+| POST | `/templates/ai-generate` | Generate from plain-English description (`?save=false` to preview) |
 | POST | `/questionnaires` | Start an instance |
 | GET | `/questionnaires/{id}` | Get with answers |
-| GET | `/questionnaires` | Filter via `?template=`, `?includes=qid=val`, `?excludes=qid=val`, `?include_drafts=` |
+| GET | `/questionnaires` | Filter via `?template=`, `?includes=qid=val`, `?excludes=qid=val`, `?include_drafts=`, `?page=`, `?page_size=` |
 | PUT | `/questionnaires/{id}/answers/{qid}` | Upsert one answer (rejected with 409 after submit) |
+| PUT | `/questionnaires/{id}/answers` | Bulk upsert answers |
 | DELETE | `/questionnaires/{id}/answers/{qid}` | Remove one answer (rejected with 409 after submit) |
 | POST | `/questionnaires/{id}/submit` | Lock the questionnaire |
+| POST | `/questionnaires/{id}/validate` | Validate without submitting |
 | GET | `/questionnaires.csv` | Streaming CSV of the filtered set |
 | GET | `/audit?since=<seq>` | Audit log entries |
 | POST | `/audit/verify` | Recompute the chain, 200 OK or 409 |
 | GET | `/respondents/{id}/export` | GDPR zip |
 | DELETE | `/respondents/{id}` | GDPR hard-delete (audit-logged) |
 | GET | `/analytics/{question_id}/clusters` | Semantic clusters of free-text answers (analytics extra required) |
-
-The `X-Actor` header (when present) is recorded in the audit log for every
-state-changing request. **No auth in this round** — the documented next
-step.
+| GET | `/webhooks` | List registered webhooks |
+| POST | `/webhooks` | Register a webhook URL |
+| DELETE | `/webhooks/{id}` | Remove a webhook |
 
 ---
 
@@ -203,16 +247,19 @@ questionnaire/
     store.py          # Legacy JsonStore (kept for migration source)
   cli/
     main.py           # Typer entry; subcommand dispatch
-    template_cmd.py   # qst template create-from-file / list / show / seed
+    template_cmd.py   # qst template create-from-file / list / show / seed / ai-generate
     answer_cmd.py     # qst answer start / resume / show
     query_cmd.py      # qst list / qst export
-    admin_cmd.py      # qst migrate / audit / gdpr / analytics / api
+    admin_cmd.py      # qst migrate / audit / gdpr / analytics / api / webhook
     prompt.py         # questionary helpers per question type
   api/
     app.py            # FastAPI factory + all routes
   analytics/
     embeddings.py     # Lazy sentence-transformers wrapper
     clustering.py     # HDBSCAN over the embeddings
+  llm/
+    generate.py       # AI template generation (Claude, adaptive thinking, retry loop)
+    analyze.py        # AI response analysis (streaming narrative report)
 tests/
   test_flow.py            # tree walker, original cases
   test_flow_with_expr.py  # tree walker with ExprFollowUp
@@ -225,36 +272,41 @@ tests/
   test_expression.py      # AST evaluation + JSON round-trip
   test_migrate.py         # JSON → SQLite fidelity
   test_api.py             # HTTP API end-to-end via TestClient
+  test_new_features.py    # auth, pagination, webhooks, archive, stats, duplicate, 8 question types
 ```
 
 Run all tests:
 
 ```bash
-pytest                          # 118 tests (~20s — includes the doctor wrapper)
-pytest -m "not slow"            # 117 fast tests (~5s) — the inner-loop subset
+pytest                          # 158 tests (~30s — includes the doctor wrapper)
+pytest -m "not slow"            # fast tests only (~5s) — the inner-loop subset
 make verify                     # pytest + `qst doctor` together (one-shot gate)
 bash check_cli.sh               # 53 bash CLI end-to-end checks with full log output
 ```
 
 ---
 
-## What changed from v0.1 (the original assignment)
+## What changed from v0.1 → v0.2 → v0.3
 
 `v0.1` was a clean exercise: JSON file, in-memory filtering, CLI only.
-`v0.2` keeps every previous test passing and lifts the codebase toward a
-sellable engine.
+`v0.2` lifted the codebase toward a sellable engine.
+`v0.3` adds AI-powered authoring, more question types, and operational features.
 
-| Theme | v0.1 → v0.2 |
+| Theme | v0.1 → v0.3 |
 |---|---|
 | Storage | Single JSON file → SQLite via SQLAlchemy 2.x; Postgres URL is a 1-line swap |
-| Filtering | O(N) full scan in Python → indexed SQL `EXISTS` per filter; AND/OR/NOT fold into one query; `OrFilter`/`NotFilter` added |
-| Follow-ups | Equality only (`when_equals`, `when_option_selected`) → expression AST: `eq/ne/gt/lt/ge/le/in/contains/and/or/not` referencing any answer; legacy shapes still accepted |
-| Question types | 5 → 6 (added `number` with `min`/`max`/`integer`) |
-| Templates | Immutable single version → versioned (edits append, questionnaires reference their snapshot) |
-| Compliance | None → submission immutability, append-only audit log with hash chain, PII encryption at rest, GDPR export/delete |
-| Interface | CLI only → CLI + FastAPI HTTP API |
+| Filtering | O(N) full scan in Python → indexed SQL `EXISTS` per filter; AND/OR/NOT fold into one query |
+| Follow-ups | Equality only → expression AST: `eq/ne/gt/lt/ge/le/in/contains/and/or/not`; legacy shapes still accepted |
+| Question types | 5 → **8** (added `number`, `rating`, `email`) |
+| Templates | Immutable single version → versioned; edits append, questionnaires reference their snapshot |
+| Compliance | None → submission immutability, append-only audit log with hash chain, PII encryption, GDPR export/delete |
+| Interface | CLI only → CLI + FastAPI HTTP API + OpenAPI docs |
+| Auth | None → optional API key (`QST_API_KEYS`); `X-Actor` advisory header |
+| Webhooks | None → HMAC-signed HTTP callbacks for submit and GDPR delete events |
+| AI features | None → AI template generation + streaming response analysis (Claude, adaptive thinking) |
+| Seed templates | 2 → **6** (medical, travel, HR onboarding, product feedback, event registration, customer support) |
 | Analytics | None → optional semantic clustering of free-text answers |
-| Tests | 44 → 118 |
+| Tests | 44 → **158** |
 
 ---
 
@@ -285,10 +337,8 @@ shape (`answers(questionnaire_id, question_id, option_index, value_text)`)
 with an index on `(question_id, value_text)`. Each `--includes`
 becomes a `WHERE EXISTS (...)`, each `--excludes` a `WHERE NOT EXISTS`.
 `OrFilter` maps to `or_(EXISTS(...), ...)`, `NotFilter` to `not_(...)`,
-all recursively composed by `_filter_to_clause`. The flat AND list,
-plus OR/NOT nesting, all fold into a single SQL query.
-At ~100k questionnaires, filter latency moves from seconds to single-digit
-milliseconds.
+all recursively composed by `_filter_to_clause`. At ~100k questionnaires,
+filter latency moves from seconds to single-digit milliseconds.
 
 ### Versioning that doesn't break old data
 Templates are append-only `(id, version)`. Each questionnaire snapshots
@@ -298,9 +348,7 @@ against the version they were anchored to.
 
 ### Submission immutability
 `submitted_at` is the lock. The store refuses any `upsert_answer`,
-`delete_answer`, or repeat-submit on a submitted questionnaire. Edits
-go through a controlled "amend" path that doesn't exist yet — keeps the
-audit trail clean.
+`delete_answer`, or repeat-submit on a submitted questionnaire.
 
 ### Hash-chained audit log
 Each row's `hash = SHA-256(prev_hash || canonical_json(payload))`.
@@ -311,18 +359,20 @@ multi-writer Postgres setup we'd add an advisory lock.
 ### PII encryption: Fernet, key from env
 `QST_PII_KEY` is a Fernet base64-urlsafe key. PII free-text answers are
 encrypted at write, decrypted on read, and the ciphertext is never
-logged. Key rotation and KMS integration are documented next-step work
-(out of scope for this round).
+logged. Key rotation and KMS integration are documented next-step work.
+
+### AI generation: retry loop with error feedback
+`generate_template` uses Claude with adaptive thinking and a strict JSON
+schema in the system prompt. On JSON parse failure or Pydantic validation
+error, the error is fed back into a follow-up message and Claude retries.
+After `max_retries` (default 2) the function raises a `RuntimeError` with
+the last error. This handles cases where the model adds markdown fences or
+minor schema deviations.
 
 ### Filters on PII / non-select questions
 Includes/Excludes are restricted to single/multi-select at parse time —
 trying to filter on a free-text or PII question is rejected with a clear
 error, not silently ignored.
-
-### Excludes-when-not-reached
-When a follow-up never triggers and so the targeted question wasn't
-even asked, `IncludesFilter` returns False and `ExcludesFilter` returns
-True. This matches the natural English reading and is tested.
 
 ---
 
@@ -339,11 +389,12 @@ True. This matches the natural English reading and is tested.
    first use and persisted to `data/.qst_pii.key` (gitignored,
    `chmod 0600`). For production, set the env var from your secret
    manager and don't rely on the file.
-6. **No auth in this round**. The `X-Actor` header is advisory and
-   recorded in the audit log; it is not authenticated.
-7. **The `analytics` extra** is opt-in. Without it, the
-   `/analytics/.../clusters` endpoint returns 503 and embeddings are
-   skipped on submit.
+6. **`QST_API_KEYS`** is optional. When unset, the API is open. When
+   set (comma-separated), all write endpoints require `X-API-Key`.
+7. **`QST_LLM_API_KEY`** is required only for AI features. The engine
+   runs fully without it; AI endpoints return 503 when the key is absent.
+8. **The `analytics` extra** is opt-in. Without it, the
+   `/analytics/.../clusters` endpoint returns 503.
 
 ---
 
@@ -352,19 +403,19 @@ True. This matches the natural English reading and is tested.
 | Deferred | Why |
 |---|---|
 | Web UI | API + OpenAPI is the value here; UI is a separate skill and a separate effort |
-| Auth (OAuth, API keys, RBAC) | Real auth design wants a day on its own; the audit-log foundation is in place |
-| Multi-tenancy | Same — needs a workspace model first |
+| OAuth / RBAC | Real auth design wants a day on its own; the API key + audit-log foundation is in place |
+| Multi-tenancy | Needs a workspace model first |
 | Postgres-now | SQLite ships in this round; Postgres swap is a SQLAlchemy URL change |
 | Background workers for embeddings | Inline embedding works at small scale; promote to a worker once volume warrants |
 | Drag-drop visual template builder | High effort, low differentiation when JSON-via-API is so direct |
 | KMS / key rotation | Single Fernet key in this round; envelope-encryption is the documented next step |
-| Webhooks | A day on retry/security/HMAC by itself; out of scope |
+| Webhook retry with backoff | Delivery is fire-and-forget in this round; retry queue is the documented next step |
 
 ---
 
 ## What lights up next
 
-1. **Auth + tenancy** unlocks the real B-direction (compliance/intake
+1. **OAuth + tenancy** unlocks the real B-direction (compliance/intake
    for healthcare, fintech, legal): every audit row gets a real actor;
    workspaces partition data; per-tenant Fernet keys.
 2. **Semantic clustering UI**: `GET /analytics/{q}/clusters` already
@@ -375,3 +426,5 @@ True. This matches the natural English reading and is tested.
 4. **Property-based tests** (Hypothesis) on the validator and the
    expression evaluator — the kind of test that finds the bug we
    haven't thought of yet.
+5. **Webhook retry queue** — reliable delivery with exponential backoff
+   and a dead-letter store.

@@ -87,6 +87,10 @@ class WebhookCreate(BaseModel):
     secret: str | None = None
 
 
+class _AIGenerateRequest(BaseModel):
+    description: str = Field(..., description="Natural-language description of the questionnaire to generate")
+
+
 # --- OpenAPI tag metadata -------------------------------------------------
 
 _OPENAPI_TAGS = [
@@ -219,6 +223,38 @@ def create_app(store=None) -> FastAPI:
             return s.duplicate_template(template_id, new_id=new_id, actor=x_actor)
         except StoreError as e:
             raise HTTPException(404, detail=str(e))
+
+    @app.post(
+        "/templates/ai-generate",
+        response_model=Template,
+        status_code=201,
+        tags=["templates"],
+        dependencies=[Depends(require_api_key)],
+        summary="Generate a template from a natural-language description using AI",
+    )
+    def ai_generate_template(
+        body: _AIGenerateRequest,
+        save: bool = Query(True, description="Persist the generated template"),
+        x_actor: str | None = Header(default=None),
+    ):
+        """Generate a questionnaire template from a plain-English description.
+
+        Requires ``QST_LLM_API_KEY`` (Anthropic API key) to be configured on the server.
+        Returns the validated Template object; pass ``?save=false`` for a dry-run preview.
+        """
+        try:
+            from ..llm.generate import generate_template
+        except RuntimeError as e:
+            raise HTTPException(503, detail=str(e))
+
+        try:
+            tpl = generate_template(body.description)
+        except RuntimeError as e:
+            raise HTTPException(502, detail=str(e))
+
+        if save:
+            s.save_template(tpl, actor=x_actor)
+        return tpl
 
     # --- Questionnaires --------------------------------------------------
 
