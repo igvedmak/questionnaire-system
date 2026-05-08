@@ -1,3 +1,4 @@
+.env
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -14,3 +15,5 @@ data/db.sqlite-shm
 data/.qst_pii.key
 *.swp
 .DS_Store
+*.zip
+*.csv

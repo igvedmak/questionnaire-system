@@ -41,77 +41,106 @@ toward a credible product foundation.
 
 Requires Python 3.11+.
 
-**One-shot setup** (no manual env work, no extra installs):
+### Option A — Docker (recommended for a quick start)
 
 ```bash
-make install               # creates venv, installs core + dev + analytics extras
-source .venv/bin/activate  # put qst on PATH for the current shell session
-make verify                # runs pytest then `qst doctor` (full end-to-end self-test)
+cp .env.example .env          # set QST_PII_KEY and optional HF_TOKEN
+make docker-up                # builds image + starts API at http://localhost:8000
 ```
 
-If you don't have `make`, the same steps directly:
+Or without `make`:
 
 ```bash
-uv venv && uv pip install -e ".[dev,analytics]"   # or python3 -m venv + pip
+docker compose up -d
+```
+
+Data (SQLite DB, PII key) is persisted in `./data/` on the host.
+HuggingFace model files are cached in a named Docker volume (`hf_cache`)
+so they aren't re-downloaded on restart.
+
+One-off commands via Docker:
+
+```bash
+docker compose run --rm api qst doctor          # 124-check self-test
+docker compose run --rm api qst template seed   # seed demo templates
+docker compose run --rm api qst audit verify    # check hash chain
+```
+
+### Option B — local venv
+
+```bash
+make install               # creates .venv, installs core + dev + analytics extras
+source .venv/bin/activate  # put qst on PATH — required once per shell session
+make verify                # pytest (118 tests) + qst doctor (124 checks)
+```
+
+> `make install` installs `qst` into `.venv/bin/` but does **not** activate the venv.
+> Run `source .venv/bin/activate` each new shell session, or invoke directly as `.venv/bin/qst`.
+
+Without `make`:
+
+```bash
+uv venv && uv pip install -e ".[dev,analytics]"
+# or without uv:
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev,analytics]"
+
 source .venv/bin/activate
 pytest && qst doctor
 ```
 
-> **Note:** `make install` installs `qst` into `.venv/bin/` but does not activate the venv.
-> Run `source .venv/bin/activate` once per shell session (or add it to your shell's rc file).
-> Alternatively, invoke it directly as `.venv/bin/qst`.
+### PII encryption key
 
-`qst doctor` is the single source of truth that the system works:
-124 checks across 11 sections — question types, expression engine, filter
-combinators, submission lifecycle, audit & security, GDPR, template
-versioning, validation errors, migration, HTTP API, and (if the analytics
-extra is installed) real semantic clustering on sentence-transformer embeddings.
-
-**PII encryption key.** Zero setup needed locally — the engine generates
-a key on first use and persists it to `data/.qst_pii.key` (gitignored,
-`chmod 0600`). The env var `QST_PII_KEY` always wins over the file; in
-production, set it from your secret manager. Key rotation / KMS
-integration is documented next-step work.
-
-A 60-second tour:
+Zero setup needed locally — the engine generates a key on first use and persists
+it to `data/.qst_pii.key` (gitignored, `chmod 0600`). Set `QST_PII_KEY` from your
+secret manager in production. Generate one with:
 
 ```bash
-qst doctor                           # end-to-end self-test (124 checks / 11 sections)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
-qst template seed                    # two demo templates with PII + nested follow-ups
-qst template list                    # current versions
-qst template show tpl_medical -v 1   # specific version
+### A 60-second tour
+
+Run these after `source .venv/bin/activate` (or prefix each with `docker compose run --rm api`):
+
+```bash
+qst doctor                           # 124-check self-test — exits 0 on green
+
+qst template seed                    # seed two demo templates (tpl_medical, tpl_travel)
+qst template list                    # list current versions
+qst template show tpl_medical        # show questions + follow-up tree
+qst template show tpl_medical -v 1   # show a specific version
 
 qst answer start tpl_medical \
     --respondent alice               # interactive; follow-ups appear as triggers fire
-qst answer resume <questionnaire_id> # pick up a draft
+qst answer resume <questionnaire_id> # resume a draft
 
-# Non-interactive answering (CI / scripts / agents):
+# Non-interactive fill from a JSON file (CI / scripts / agents):
 cat > /tmp/answers.json <<'EOF'
 {"has_allergies":true,"allergy_details":"seeds","contact_method":"Email","date_of_birth":"1991-11-13","age":33,"symptoms":["Fever","Headache"],"fever_duration":"2 days"}
 EOF
 qst answer fill tpl_medical /tmp/answers.json --respondent alice
+# Note: when the analytics extra is installed, the first fill per session
+# prints HuggingFace model loading progress — this is normal.
 
-qst list                             # submitted questionnaires
+qst list                             # all submitted questionnaires
 qst list -t tpl_medical \
-        -i contact_method=Email \
-        -i symptoms=Fever            # AND of three filters (OR/NOT via API/SDK)
+    -i contact_method=Email \
+    -i symptoms=Fever                # AND of three filters
 
-qst export submissions.csv -t tpl_medical
+qst export submissions.csv -t tpl_medical   # CSV export
 
-qst audit list                       # every state change
-qst audit verify                     # SHA-256 chain integrity check
+qst audit list                       # every state-change event
+qst audit verify                     # verify SHA-256 hash chain
 
-qst gdpr export alice alice.zip      # all of alice's submissions
-qst gdpr delete alice --yes          # permanent, audit-logged
+qst gdpr export alice alice.zip      # GDPR export zip for respondent alice
+qst gdpr delete alice --yes          # permanent hard-delete, audit-logged
 
-qst api --port 8000
-# then open: http://localhost:8000/docs   ← interactive API explorer
-# (http://localhost:8000/ redirects there automatically)
+qst api --port 8000                  # start HTTP API
+# then open: http://localhost:8000   (redirects to /docs automatically)
 ```
 
 ```bash
-# Migrate from the legacy JSON store (data/db.json) into SQLite (data/db.sqlite):
+# Migrate from a legacy JSON store (data/db.json → data/db.sqlite):
 qst migrate
 ```
 
@@ -123,7 +152,9 @@ Boot:
 
 ```bash
 qst api --host 0.0.0.0 --port 8000
-# then open: http://localhost:8000/docs  (or just / — it redirects)
+# or: make api
+# or: docker compose up -d
+# then open: http://localhost:8000   (redirects to /docs automatically)
 ```
 
 Endpoints:

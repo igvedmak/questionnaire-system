@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data                   # SQLite DB + PII key persisted on host
+      - hf_cache:/root/.cache/huggingface  # model cache (avoids re-download on restart)
+    environment:
+      - QST_PII_KEY=${QST_PII_KEY:-}       # leave empty to auto-generate on first boot
+      - HF_TOKEN=${HF_TOKEN:-}             # optional: avoids HuggingFace rate-limit warnings
+
+volumes:
+  hf_cache:

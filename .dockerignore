@@ -1,0 +1,17 @@
+.venv/
+data/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.git/
+.gitignore
+tests/
+check_cli.sh
+*.zip
+*.csv
+*.sqlite
+*.swp
+.DS_Store

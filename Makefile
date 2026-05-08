@@ -1,12 +1,18 @@
 # Zero-touch dev workflow.
 #
-# `make install`  — create venv and install everything (analytics extra included).
-# `make test`     — run the pytest suite.
-# `make verify`   — run pytest then `qst doctor` (the end-to-end self-test).
-# `make api`      — start the FastAPI server on :8000.
-# `make demo`     — seed templates and submit a sample questionnaire so the
-#                   filter / list / export commands have data to chew on.
-# `make clean`    — wipe venv + DB + caches.
+# Local dev:
+# `make install`       — create venv and install everything (analytics extra included).
+# `make verify`        — pytest (118 tests) + qst doctor (124 checks).
+# `make test`          — pytest only.
+# `make api`           — start the FastAPI server on :8000.
+# `make demo`          — seed templates + submit a sample questionnaire.
+# `make clean`         — wipe venv + DB + caches.
+#
+# Docker:
+# `make docker-up`     — build image + start API at http://localhost:8000.
+# `make docker-down`   — stop containers.
+# `make docker-logs`   — tail API logs.
+# `make docker-build`  — build image only.
 
 PY    ?= python3
 VENV  ?= .venv
@@ -16,23 +22,18 @@ QST   := $(BIN)/qst
 # Prefer uv if available (fast); fall back to stdlib venv + pip.
 UV := $(shell command -v uv 2>/dev/null)
 
-.PHONY: install test verify api demo clean help
+.PHONY: install test verify api demo clean help docker-build docker-up docker-down docker-logs
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | grep -v '^\.' | sort
 
-$(BIN)/python:
+install:
 ifneq ($(UV),)
 	$(UV) venv $(VENV)
+	$(UV) pip install -e ".[dev,analytics]"
 else
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
-endif
-
-install: $(BIN)/python
-ifneq ($(UV),)
-	$(UV) pip install -e ".[dev,analytics]"
-else
 	$(BIN)/pip install -e ".[dev,analytics]"
 endif
 	@echo
@@ -60,6 +61,19 @@ demo:
 	@echo "    qst list"
 	@echo "    qst list -i contact_method=Email -i symptoms=Fever"
 	@echo "    qst audit list"
+
+docker-build:
+	docker build -t questionnaire-engine .
+
+docker-up:
+	docker compose up -d
+	@echo "  API running at http://localhost:8000/docs"
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f api
 
 clean:
 	rm -rf $(VENV) .pytest_cache **/__pycache__ data/db.sqlite data/db.sqlite-* data/.qst_pii.key
