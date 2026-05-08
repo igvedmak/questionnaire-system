@@ -40,6 +40,9 @@ include = ["questionnaire*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "slow: end-to-end tests that spawn subprocesses (skip with -m 'not slow')",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:sentence_transformers",
 ]

@@ -28,7 +28,10 @@ toward a credible product foundation.
 | **CSV export** of filtered queries, streamed | `cli/query_cmd.py`, `/questionnaires.csv` |
 | **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional analytics extra | `analytics/clustering.py` |
 | **Migration** from the legacy JSON store via `qst migrate` | `persistence/migrate.py` |
-| **95 tests** covering domain, store, audit, encryption, expression engine, migration, and the API | `tests/` |
+| **113 tests** covering domain, store, audit, encryption, expression engine, migration, API, and one end-to-end `qst doctor` wrapper | `tests/` |
+| **`qst doctor`** — single command that runs the full manual checklist (CLI + tamper + HTTP API + clustering) and exits 0/1 | `cli/doctor_cmd.py` |
+| **`qst answer fill`** — non-interactive submission from a JSON file (CI / agents) | `cli/answer_cmd.py` |
+| **`Makefile`** — one-shot `make install` / `make verify` / `make demo` | top-level |
 
 ---
 
@@ -36,34 +39,37 @@ toward a credible product foundation.
 
 Requires Python 3.11+.
 
+**One-shot setup** (no manual env work, no extra installs):
+
 ```bash
-# Install with uv (recommended; faster) or stdlib pip
-uv venv && uv pip install -e ".[dev]"
-# OR: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+make install      # creates venv, installs core + dev + analytics extras
+make verify       # runs pytest then `qst doctor` (full end-to-end self-test)
+```
 
-# Optional analytics extra (sentence-transformers + HDBSCAN; ~80MB model)
-uv pip install -e ".[dev,analytics]"
+If you don't have `make`, the same steps directly:
 
+```bash
+uv venv && uv pip install -e ".[dev,analytics]"   # or python3 -m venv + pip
 source .venv/bin/activate
+pytest && qst doctor
 ```
 
-**PII encryption key.** For local development, no setup is needed —
-the engine generates a key on first use and persists it to
-`data/.qst_pii.key` (gitignored, `chmod 0600`) so writes in one shell are
-readable in the next.
+`qst doctor` is the single source of truth that the system works:
+30 checks across CLI, migration, HTTP API, audit-chain tamper detection,
+and (if the analytics extra is installed) real semantic clustering on
+sentence-transformer embeddings.
 
-For production, set `QST_PII_KEY` from your secret manager:
-
-```bash
-export QST_PII_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-```
-
-The env var always wins over the file. Key rotation / KMS integration is
-the documented next step.
+**PII encryption key.** Zero setup needed locally — the engine generates
+a key on first use and persists it to `data/.qst_pii.key` (gitignored,
+`chmod 0600`). The env var `QST_PII_KEY` always wins over the file; in
+production, set it from your secret manager. Key rotation / KMS
+integration is documented next-step work.
 
 A 60-second tour:
 
 ```bash
+qst doctor                           # end-to-end self-test (30 checks)
+
 qst template seed                    # two demo templates with PII + nested follow-ups
 qst template list                    # current versions
 qst template show tpl_medical -v 1   # specific version
@@ -71,6 +77,12 @@ qst template show tpl_medical -v 1   # specific version
 qst answer start tpl_medical \
     --respondent alice               # interactive; follow-ups appear as triggers fire
 qst answer resume <questionnaire_id> # pick up a draft
+
+# Non-interactive answering (CI / scripts / agents):
+echo '{"has_allergies":true,"allergy_details":"seeds","contact_method":"Email",
+       "date_of_birth":"1991-11-13","age":33,"symptoms":["Fever","Headache"],
+       "fever_duration":"2 days"}' > /tmp/answers.json
+qst answer fill tpl_medical /tmp/answers.json --respondent alice
 
 qst list                             # submitted questionnaires
 qst list -t tpl_medical \
@@ -177,8 +189,9 @@ tests/
 Run all tests:
 
 ```bash
-.venv/bin/pytest
-# 95 tests in ~4s
+pytest                          # 113 tests (~20s — includes the doctor wrapper)
+pytest -m "not slow"            # 112 fast tests (~5s) — the inner-loop subset
+make verify                     # pytest + `qst doctor` together (one-shot gate)
 ```
 
 ---

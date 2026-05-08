@@ -1,14 +1,32 @@
-"""`qst answer ...` — start or resume answering a questionnaire."""
+"""`qst answer ...` — start, resume, or non-interactively fill a questionnaire."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import typer
 
 from ..domain.flow import next_unanswered_question, resolve_active_questions
-from ..domain.types import FreeTextQuestion, Questionnaire
+from ..domain.types import (
+    AnswerValue,
+    BooleanAnswer,
+    BooleanQuestion,
+    DateAnswer,
+    DateQuestion,
+    FreeTextAnswer,
+    FreeTextQuestion,
+    MultiSelectAnswer,
+    MultiSelectQuestion,
+    NumberAnswer,
+    NumberQuestion,
+    Question,
+    Questionnaire,
+    SingleSelectAnswer,
+    SingleSelectQuestion,
+)
 from ..domain.validation import validate_answers, validate_for_submission
 from ..persistence import SubmissionLockedError, default_store
 from .prompt import prompt_for_answer
@@ -123,6 +141,128 @@ def _drive_loop(questionnaire_id: str, *, actor: str | None = None) -> None:
         except SubmissionLockedError as e:
             typer.echo(f"  ! {e}", err=True)
             return
+
+
+@app.command("fill")
+def fill(
+    template_id: str,
+    answers_path: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False),
+    respondent: str = typer.Option(None, "--respondent",
+                                   help="Optional respondent id (used for GDPR export/delete)"),
+    actor: str = typer.Option(None, "--actor"),
+    no_submit: bool = typer.Option(False, "--no-submit",
+                                   help="Save the questionnaire as a draft instead of submitting"),
+):
+    """Non-interactive answering: read a JSON map of {question_id: value} and
+    submit (or save as draft).
+
+    Values are coerced to the right ``AnswerValue`` shape based on the
+    question's type, so the JSON file stays readable:
+
+    \b
+    {
+      "has_allergies": true,
+      "contact_method": "Email",
+      "symptoms": ["Fever", "Headache"],
+      "age": 33
+    }
+
+    Useful for scripting, CI, agent automation, and bulk seeding. Validation
+    runs before submission; failures exit non-zero.
+    """
+    store = default_store()
+    template = store.get_template(template_id)
+    if template is None:
+        typer.echo(f"unknown template id: {template_id}", err=True)
+        raise typer.Exit(code=1)
+
+    raw = json.loads(answers_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        typer.echo("answers JSON must be a {question_id: value} object", err=True)
+        raise typer.Exit(code=2)
+
+    by_id = _index_questions_by_id(template.questions)
+    answers: dict[str, AnswerValue] = {}
+    for qid, raw_value in raw.items():
+        q = by_id.get(qid)
+        if q is None:
+            typer.echo(f"unknown question id in answers: {qid!r}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            answers[qid] = _coerce_answer(q, raw_value)
+        except (ValueError, TypeError) as e:
+            typer.echo(f"could not coerce answer for {qid!r}: {e}", err=True)
+            raise typer.Exit(code=2)
+
+    qn = Questionnaire(
+        id=str(uuid.uuid4()),
+        template_id=template_id,
+        template_version=template.version,
+        created_at=_now_iso(),
+        respondent_id=respondent,
+        answers=answers,
+    )
+    store.save_questionnaire(qn, actor=actor)
+
+    if no_submit:
+        typer.echo(f"saved draft questionnaire {qn.id}")
+        return
+
+    result = validate_for_submission(template, answers)
+    if not result.ok:
+        typer.echo("answers fail validation:", err=True)
+        for err in result.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(code=1)
+
+    _embed_freetext_answers_if_available(store, template, qn)
+    store.submit_questionnaire(qn.id, actor=actor)
+    typer.echo(f"submitted questionnaire {qn.id}")
+
+
+# --- Helpers for `fill` --------------------------------------------------
+
+def _index_questions_by_id(questions: list[Question]) -> dict[str, Question]:
+    """Build a flat id→Question map across the entire (recursive) tree."""
+    out: dict[str, Question] = {}
+
+    def walk(qs: list[Question]) -> None:
+        for q in qs:
+            out[q.id] = q
+            for fu in getattr(q, "follow_ups", []) or []:
+                walk(fu.questions)
+
+    walk(questions)
+    return out
+
+
+def _coerce_answer(q: Question, raw) -> AnswerValue:
+    """Convert a JSON-decoded scalar/list into an AnswerValue matching ``q``."""
+    if isinstance(q, BooleanQuestion):
+        if not isinstance(raw, bool):
+            raise ValueError(f"expected bool, got {type(raw).__name__}")
+        return BooleanAnswer(value=raw)
+    if isinstance(q, SingleSelectQuestion):
+        if not isinstance(raw, str):
+            raise ValueError(f"expected str, got {type(raw).__name__}")
+        return SingleSelectAnswer(value=raw)
+    if isinstance(q, MultiSelectQuestion):
+        if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+            raise ValueError(f"expected list[str], got {type(raw).__name__}")
+        return MultiSelectAnswer(value=raw)
+    if isinstance(q, DateQuestion):
+        if not isinstance(raw, str):
+            raise ValueError(f"expected str, got {type(raw).__name__}")
+        return DateAnswer(value=raw)
+    if isinstance(q, FreeTextQuestion):
+        if not isinstance(raw, str):
+            raise ValueError(f"expected str, got {type(raw).__name__}")
+        return FreeTextAnswer(value=raw)
+    if isinstance(q, NumberQuestion):
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(f"expected number, got {type(raw).__name__}")
+        return NumberAnswer(value=float(raw))
+    raise ValueError(f"unhandled question type: {q.type}")
 
 
 def _embed_freetext_answers_if_available(store, template, qn: Questionnaire) -> None:
