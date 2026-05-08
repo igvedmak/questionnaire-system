@@ -150,6 +150,26 @@ class SqlStore:
             with self.engine.begin() as conn:
                 conn.exec_driver_sql("PRAGMA journal_mode = WAL")
                 conn.exec_driver_sql("PRAGMA foreign_keys = ON")
+                self._add_missing_columns(conn)
+
+    def _add_missing_columns(self, conn: object) -> None:
+        """Add columns that exist in the model but not in the on-disk schema.
+
+        create_all() creates missing *tables* but never adds columns to
+        existing ones.  This handles DB files created before a new column was
+        introduced so the server never crashes with 'no such column'.
+        """
+        from sqlalchemy import inspect as sa_inspect
+        insp = sa_inspect(self.engine)
+        for table, col, typedef in [
+            ("questionnaires", "expires_at", "VARCHAR"),
+            ("questionnaires", "archived_at", "VARCHAR"),
+        ]:
+            existing = {c["name"] for c in insp.get_columns(table)}
+            if col not in existing:
+                conn.exec_driver_sql(  # type: ignore[union-attr]
+                    f"ALTER TABLE {table} ADD COLUMN {col} {typedef}"
+                )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
