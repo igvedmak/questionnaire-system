@@ -688,6 +688,23 @@ class SqlStore:
 
     # --- Archive ---------------------------------------------------------
 
+    def delete_questionnaire(self, qid: str, actor: str | None = None) -> None:
+        """Hard-delete a questionnaire and all its answers."""
+        with Session(self.engine) as sess:
+            row = sess.get(QuestionnaireRow, qid)
+            if row is None:
+                raise StoreError(f"questionnaire {qid!r} not found")
+            self._append_audit_in_session(sess, AuditEvent(
+                ts=now_iso(),
+                actor=actor,
+                action="questionnaire.delete",
+                target_type="questionnaire",
+                target_id=qid,
+                payload={},
+            ))
+            sess.delete(row)
+            sess.commit()
+
     def archive_questionnaire(self, qid: str, actor: str | None = None) -> None:
         """Soft-deletes a questionnaire. Archived questionnaires are hidden from normal queries."""
         with Session(self.engine) as sess:

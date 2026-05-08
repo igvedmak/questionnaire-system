@@ -419,6 +419,19 @@ def create_app(store=None) -> FastAPI:
             raise HTTPException(404, detail=str(e))
         return {"archived": True}
 
+    @app.delete(
+        "/questionnaires/{qid}",
+        status_code=204,
+        tags=["questionnaires"],
+        dependencies=[Depends(require_api_key)],
+        summary="Permanently delete a questionnaire and all its answers",
+    )
+    def delete_questionnaire(qid: str, x_actor: str | None = Header(default=None)):
+        try:
+            s.delete_questionnaire(qid, actor=x_actor)
+        except StoreError as e:
+            raise HTTPException(404, detail=str(e))
+
     @app.post("/questionnaires/{qid}/validate", tags=["questionnaires"])
     def validate_questionnaire(qid: str):
         qn = s.get_questionnaire(qid)

@@ -49,4 +49,8 @@ export const api = {
     }),
   submitQuestionnaire: (qid: string) =>
     req<Questionnaire>(`/questionnaires/${qid}/submit`, { method: 'POST' }),
+  archiveQuestionnaire: (qid: string) =>
+    req<{ archived: boolean }>(`/questionnaires/${qid}/archive`, { method: 'POST' }),
+  deleteQuestionnaire: (qid: string) =>
+    req<void>(`/questionnaires/${qid}`, { method: 'DELETE' }),
 }

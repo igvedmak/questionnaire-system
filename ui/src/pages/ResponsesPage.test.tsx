@@ -4,10 +4,18 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { MOCK_TEMPLATE, MOCK_SUBMITTED } from '../test/mocks'
 
+const mockNavigate = vi.hoisted(() => vi.fn())
 const mockApi = vi.hoisted(() => ({
   listTemplates: vi.fn(),
   listQuestionnaires: vi.fn(),
+  archiveQuestionnaire: vi.fn(),
+  deleteQuestionnaire: vi.fn(),
 }))
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import ResponsesPage from './ResponsesPage'
@@ -20,6 +28,8 @@ beforeEach(() => {
   vi.resetAllMocks()
   mockApi.listTemplates.mockResolvedValue([MOCK_TEMPLATE])
   mockApi.listQuestionnaires.mockResolvedValue([MOCK_SUBMITTED])
+  mockApi.archiveQuestionnaire.mockResolvedValue({ archived: true })
+  mockApi.deleteQuestionnaire.mockResolvedValue(undefined)
 })
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -80,7 +90,7 @@ describe('ResponsesPage — filtering', () => {
 describe('ResponsesPage — detail panel', () => {
   it('opens panel when a row is clicked', async () => {
     const { user } = setup()
-    await waitFor(() => screen.getByText('Test survey'))
+    await screen.findByRole('cell', { name: 'Test survey' })
     const dataRow = screen.getAllByRole('row')[1]
     await user.click(dataRow)
     expect(await screen.findByText('Do you agree?')).toBeInTheDocument()
@@ -88,7 +98,7 @@ describe('ResponsesPage — detail panel', () => {
 
   it('shows answer values in detail panel', async () => {
     const { user } = setup()
-    await waitFor(() => screen.getByText('Test survey'))
+    await screen.findByRole('cell', { name: 'Test survey' })
     await user.click(screen.getAllByRole('row')[1])
     expect(await screen.findByText('Yes')).toBeInTheDocument()
     expect(screen.getByText('Blue')).toBeInTheDocument()
@@ -96,14 +106,81 @@ describe('ResponsesPage — detail panel', () => {
 
   it('closes panel on close button click', async () => {
     const { user } = setup()
-    await waitFor(() => screen.getByText('Test survey'))
+    await screen.findByRole('cell', { name: 'Test survey' })
     await user.click(screen.getAllByRole('row')[1])
     await screen.findByText('Do you agree?')
-    // The X button inside the panel — find by its SVG path
     const closeBtn = screen.getAllByRole('button').find(b =>
       b.querySelector('path[d*="M6 18L18 6"]')
     )!
     await user.click(closeBtn)
     await waitFor(() => expect(screen.queryByText('Do you agree?')).not.toBeInTheDocument())
+  })
+})
+
+// ── row actions ───────────────────────────────────────────────────────────────
+
+describe('ResponsesPage — row actions', () => {
+  async function openMenu(user: ReturnType<typeof userEvent.setup>) {
+    await screen.findByRole('cell', { name: 'Test survey' })
+    // Click the ⋮ button (last button in the row)
+    const menuBtn = screen.getAllByTitle('Actions')[0]
+    await user.click(menuBtn)
+  }
+
+  it('shows action menu on ⋮ click', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    expect(screen.getByText('View details')).toBeInTheDocument()
+    expect(screen.getByText('Archive')).toBeInTheDocument()
+    expect(screen.getByText('Delete')).toBeInTheDocument()
+  })
+
+  it('opens detail panel from View details', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('View details'))
+    expect(await screen.findByText('Do you agree?')).toBeInTheDocument()
+  })
+
+  it('shows archive confirm dialog', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('Archive'))
+    expect(await screen.findByText('Archive questionnaire?')).toBeInTheDocument()
+  })
+
+  it('calls archiveQuestionnaire on confirm', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('Archive'))
+    await screen.findByText('Archive questionnaire?')
+    await user.click(screen.getByRole('button', { name: 'Archive' }))
+    await waitFor(() => expect(mockApi.archiveQuestionnaire).toHaveBeenCalledWith(MOCK_SUBMITTED.id))
+  })
+
+  it('shows delete confirm dialog with danger style', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('Delete'))
+    expect(await screen.findByText('Delete questionnaire?')).toBeInTheDocument()
+    expect(screen.getByText(/permanently delete/)).toBeInTheDocument()
+  })
+
+  it('calls deleteQuestionnaire on confirm', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('Delete'))
+    await screen.findByText('Delete questionnaire?')
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(mockApi.deleteQuestionnaire).toHaveBeenCalledWith(MOCK_SUBMITTED.id))
+  })
+
+  it('dismisses confirm dialog on Cancel', async () => {
+    const { user } = setup()
+    await openMenu(user)
+    await user.click(screen.getByText('Delete'))
+    await screen.findByText('Delete questionnaire?')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Delete questionnaire?')).not.toBeInTheDocument())
   })
 })
