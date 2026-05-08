@@ -1,7 +1,7 @@
 """AI-powered analysis of questionnaire responses.
 
-Streams a structured analysis report to stdout given a template and its
-submitted questionnaires. Uses adaptive thinking for deeper insights.
+Streams a structured analysis report given a template and its submitted
+questionnaires. Provider is selected via QST_LLM_MODEL.
 """
 
 from __future__ import annotations
@@ -24,20 +24,30 @@ response data and produce a concise, insightful report. Structure your report wi
 Be specific and data-driven. Mention actual values, percentages, and counts where possible."""
 
 
-def _client():
+def _completion_kwargs() -> dict:
     try:
-        import anthropic
+        import litellm  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "The 'llm' extra is required: pip install questionnaire[llm]"
         ) from exc
 
-    api_key = settings.llm_api_key
-    if not api_key:
+    if not settings.llm_api_key and not settings.llm_base_url:
         raise RuntimeError(
-            "QST_LLM_API_KEY is not set. Add it to .env or the environment."
+            "LLM API key not configured. Set QST_LLM_API_KEY in .env or the environment."
         )
-    return anthropic.Anthropic(api_key=api_key)
+
+    model = settings.llm_model
+    kwargs: dict = {"model": model, "max_tokens": 4096}
+    if settings.llm_api_key:
+        kwargs["api_key"] = settings.llm_api_key
+    if settings.llm_base_url:
+        kwargs["base_url"] = settings.llm_base_url
+
+    if "claude" in model or model.startswith("anthropic/"):
+        kwargs["thinking"] = {"type": "adaptive"}
+
+    return kwargs
 
 
 def _build_summary(template: Template, questionnaires: list[Questionnaire]) -> str:
@@ -54,11 +64,8 @@ def _build_summary(template: Template, questionnaires: list[Questionnaire]) -> s
         lines.append(f"  [{q.type}] {q.id}: {q.prompt}")
 
     lines += ["", "Response data (submitted only):"]
-    for i, qn in enumerate(submitted[:200], 1):  # cap at 200 to stay within context
-        answers = {
-            qid: av.model_dump()
-            for qid, av in qn.answers.items()
-        }
+    for i, qn in enumerate(submitted[:200], 1):
+        answers = {qid: av.model_dump() for qid, av in qn.answers.items()}
         lines.append(f"  Response {i} (id={qn.id}): {json.dumps(answers)}")
 
     if len(submitted) > 200:
@@ -78,20 +85,23 @@ def stream_analysis(
         for chunk in stream_analysis(template, questionnaires):
             print(chunk, end="", flush=True)
     """
-    client = _client()
+    import litellm
+
+    kwargs = _completion_kwargs()
     summary = _build_summary(template, questionnaires)
 
-    with client.messages.stream(
-        model=settings.llm_model,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=_SYSTEM,
+    response = litellm.completion(
+        **kwargs,
+        stream=True,
         messages=[
+            {"role": "system", "content": _SYSTEM},
             {
                 "role": "user",
                 "content": f"Please analyze the following questionnaire response data:\n\n{summary}",
-            }
+            },
         ],
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+    )
+    for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta

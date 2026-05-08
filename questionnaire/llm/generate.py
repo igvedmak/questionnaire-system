@@ -1,7 +1,13 @@
 """AI-powered questionnaire template generation.
 
-Sends a natural-language description to Claude and returns a validated
-Template object. Retries once on parse failure.
+Sends a natural-language description to any LLM via litellm and returns
+a validated Template object. Provider is selected via QST_LLM_MODEL.
+
+Supported examples:
+  anthropic/claude-opus-4-7   (Anthropic — default)
+  gpt-4o                      (OpenAI)
+  gemini/gemini-1.5-pro       (Google)
+  ollama/llama3               (local Ollama — no key needed)
 """
 
 from __future__ import annotations
@@ -47,29 +53,42 @@ FOLLOW-UP OBJECTS (nest inside a question's follow_ups list):
   select follow-up:     {"when_option_selected": "<option value>", "questions": [<question objects>]}"""
 
 
-def _client():
+def _completion_kwargs() -> dict:
     try:
-        import anthropic
+        import litellm  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "The 'llm' extra is required: pip install questionnaire[llm]"
         ) from exc
 
-    api_key = settings.llm_api_key
-    if not api_key:
+    if not settings.llm_api_key and not settings.llm_base_url:
         raise RuntimeError(
-            "QST_LLM_API_KEY is not set. Add it to .env or the environment."
+            "LLM API key not configured. Set QST_LLM_API_KEY in .env or the environment."
         )
-    return anthropic.Anthropic(api_key=api_key)
+
+    model = settings.llm_model
+    kwargs: dict = {"model": model, "max_tokens": 4096}
+    if settings.llm_api_key:
+        kwargs["api_key"] = settings.llm_api_key
+    if settings.llm_base_url:
+        kwargs["base_url"] = settings.llm_base_url
+
+    # Claude-specific: enable adaptive thinking for better structured output
+    if "claude" in model or model.startswith("anthropic/"):
+        kwargs["thinking"] = {"type": "adaptive"}
+
+    return kwargs
 
 
 def generate_template(description: str, *, max_retries: int = 2) -> Template:
     """Generate a validated Template from a natural-language description.
 
-    Raises RuntimeError if the LLM extra is missing, the API key is unset,
-    or if Claude produces JSON that fails Pydantic validation after retries.
+    Raises RuntimeError if the llm extra is missing, the API key is unset,
+    or if the model produces JSON that fails validation after retries.
     """
-    client = _client()
+    import litellm
+
+    kwargs = _completion_kwargs()
     now = datetime.now(timezone.utc).isoformat()
 
     prompt = (
@@ -78,25 +97,18 @@ def generate_template(description: str, *, max_retries: int = 2) -> Template:
     )
 
     last_err: Exception | None = None
-    for attempt in range(max_retries):
-        response = client.messages.create(
-            model=settings.llm_model,
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
+    for _ in range(max_retries):
+        response = litellm.completion(
+            **kwargs,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
         )
 
-        # Extract text block (skip thinking blocks)
-        text = next(
-            (b.text for b in response.content if b.type == "text"),
-            None,
-        )
-        if not text:
-            last_err = ValueError("No text block in response")
-            continue
+        text = response.choices[0].message.content or ""
 
-        # Strip markdown fences if Claude added them despite instructions
+        # Strip markdown fences if the model added them despite instructions
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = stripped.split("```", 2)[1]

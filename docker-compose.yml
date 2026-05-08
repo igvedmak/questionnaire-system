@@ -9,8 +9,9 @@ services:
     environment:
       - QST_PII_KEY=${QST_PII_KEY:-}       # leave empty to auto-generate on first boot
       - HF_TOKEN=${HF_TOKEN:-}             # optional: avoids HuggingFace rate-limit warnings
-      - QST_LLM_API_KEY=${QST_LLM_API_KEY:-}   # Anthropic API key for AI features
-      - QST_LLM_MODEL=${QST_LLM_MODEL:-claude-opus-4-7}
+      - QST_LLM_API_KEY=${QST_LLM_API_KEY:-}          # API key for chosen LLM provider
+      - QST_LLM_MODEL=${QST_LLM_MODEL:-anthropic/claude-opus-4-7}  # litellm model string
+      - QST_LLM_BASE_URL=${QST_LLM_BASE_URL:-}        # optional: for local/custom endpoints
 
   ui:
     build:

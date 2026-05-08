@@ -239,7 +239,7 @@ def create_app(store=None) -> FastAPI:
     ):
         """Generate a questionnaire template from a plain-English description.
 
-        Requires ``QST_LLM_API_KEY`` (Anthropic API key) to be configured on the server.
+        Requires ``QST_LLM_API_KEY`` and ``QST_LLM_MODEL`` to be configured.
         Returns the validated Template object; pass ``?save=false`` for a dry-run preview.
         """
         try:
@@ -255,6 +255,39 @@ def create_app(store=None) -> FastAPI:
         if save:
             s.save_template(tpl, actor=x_actor)
         return tpl
+
+    @app.get(
+        "/llm/config",
+        tags=["llm"],
+        summary="Return the active LLM provider/model (no secrets exposed)",
+    )
+    def llm_config():
+        """Return which LLM model is configured and whether an API key is set.
+
+        The API key itself is never returned — only whether one is present.
+        """
+        from ..config import settings as cfg
+        model = cfg.llm_model
+        # Derive a human-friendly provider name from the model string
+        if model.startswith("anthropic/") or "claude" in model:
+            provider = "Anthropic"
+        elif model.startswith("gpt") or model.startswith("openai/") or model.startswith("o1") or model.startswith("o3"):
+            provider = "OpenAI"
+        elif model.startswith("gemini/") or model.startswith("google/"):
+            provider = "Google"
+        elif model.startswith("ollama/"):
+            provider = "Ollama (local)"
+        elif model.startswith("cohere/"):
+            provider = "Cohere"
+        elif model.startswith("mistral/"):
+            provider = "Mistral"
+        else:
+            provider = model.split("/")[0].capitalize() if "/" in model else "Unknown"
+        return {
+            "model": model,
+            "provider": provider,
+            "configured": bool(cfg.llm_api_key or cfg.llm_base_url),
+        }
 
     # --- Questionnaires --------------------------------------------------
 

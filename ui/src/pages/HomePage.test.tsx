@@ -11,6 +11,7 @@ const mockApi = vi.hoisted(() => ({
   getTemplateStats: vi.fn(),
   createQuestionnaire: vi.fn(),
   aiGenerate: vi.fn(),
+  getLlmConfig: vi.fn(),
 }))
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -31,6 +32,7 @@ beforeEach(() => {
   mockApi.getTemplateStats.mockResolvedValue({ template_id: 'tpl_test', total: 5, submitted: 3, completion_rate: 0.6 })
   mockApi.createQuestionnaire.mockResolvedValue(MOCK_QUESTIONNAIRE)
   mockApi.aiGenerate.mockResolvedValue(MOCK_TEMPLATE)
+  mockApi.getLlmConfig.mockResolvedValue({ model: 'anthropic/claude-opus-4-7', provider: 'Anthropic', configured: true })
 })
 
 describe('HomePage — template list', () => {

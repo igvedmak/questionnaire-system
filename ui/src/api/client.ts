@@ -1,4 +1,4 @@
-import type { AnswerValue, Questionnaire, Template, TemplateStats } from '../types'
+import type { AnswerValue, LlmConfig, Questionnaire, Template, TemplateStats } from '../types'
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
@@ -26,6 +26,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ description }),
     }),
+  getLlmConfig: () => req<LlmConfig>('/llm/config'),
 
   // questionnaires
   createQuestionnaire: (templateId: string, respondentId?: string) =>

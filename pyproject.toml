@@ -31,7 +31,7 @@ analytics = [
     "scikit-learn>=1.4",
 ]
 llm = [
-    "anthropic>=0.40",
+    "litellm>=1.0",
 ]
 
 [project.scripts]

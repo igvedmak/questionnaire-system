@@ -77,3 +77,10 @@ export interface TemplateStats {
   submitted: number
   completion_rate: number
 }
+
+export interface LlmConfig {
+  model: string
+  provider: string
+  configured: boolean
+}
+

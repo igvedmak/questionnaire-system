@@ -24,8 +24,11 @@ class Settings(BaseSettings):
     max_free_text_length: int = 10_000
 
     # LLM integration (optional — requires the 'llm' extra)
-    llm_api_key: str = Field(default="", description="Anthropic API key for AI-powered features")
-    llm_model: str = Field(default="claude-opus-4-7", description="Claude model for AI-powered features")
+    # Model uses litellm format: "anthropic/claude-opus-4-7", "gpt-4o",
+    # "gemini/gemini-1.5-pro", "ollama/llama3", etc.
+    llm_api_key: str = Field(default="", description="API key for the chosen LLM provider")
+    llm_model: str = Field(default="anthropic/claude-opus-4-7", description="litellm model string")
+    llm_base_url: str = Field(default="", description="Optional base URL (for Ollama / local models)")
 
     model_config = ConfigDict(
         env_prefix="QST_",
