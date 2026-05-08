@@ -44,8 +44,9 @@ Requires Python 3.11+.
 **One-shot setup** (no manual env work, no extra installs):
 
 ```bash
-make install      # creates venv, installs core + dev + analytics extras
-make verify       # runs pytest then `qst doctor` (full end-to-end self-test)
+make install               # creates venv, installs core + dev + analytics extras
+source .venv/bin/activate  # put qst on PATH for the current shell session
+make verify                # runs pytest then `qst doctor` (full end-to-end self-test)
 ```
 
 If you don't have `make`, the same steps directly:
@@ -55,6 +56,10 @@ uv venv && uv pip install -e ".[dev,analytics]"   # or python3 -m venv + pip
 source .venv/bin/activate
 pytest && qst doctor
 ```
+
+> **Note:** `make install` installs `qst` into `.venv/bin/` but does not activate the venv.
+> Run `source .venv/bin/activate` once per shell session (or add it to your shell's rc file).
+> Alternatively, invoke it directly as `.venv/bin/qst`.
 
 `qst doctor` is the single source of truth that the system works:
 124 checks across 11 sections — question types, expression engine, filter
@@ -82,9 +87,9 @@ qst answer start tpl_medical \
 qst answer resume <questionnaire_id> # pick up a draft
 
 # Non-interactive answering (CI / scripts / agents):
-echo '{"has_allergies":true,"allergy_details":"seeds","contact_method":"Email",
-       "date_of_birth":"1991-11-13","age":33,"symptoms":["Fever","Headache"],
-       "fever_duration":"2 days"}' > /tmp/answers.json
+cat > /tmp/answers.json <<'EOF'
+{"has_allergies":true,"allergy_details":"seeds","contact_method":"Email","date_of_birth":"1991-11-13","age":33,"symptoms":["Fever","Headache"],"fever_duration":"2 days"}
+EOF
 qst answer fill tpl_medical /tmp/answers.json --respondent alice
 
 qst list                             # submitted questionnaires
