@@ -2,20 +2,29 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install uv for fast dependency installs
+# Install uv
 RUN pip install --no-cache-dir uv
 
-# Copy project files (pyproject first for layer caching)
+# --- Dependency layer (cached until pyproject.toml changes) ---------------
 COPY pyproject.toml .
+
+# Stub package lets uv resolve + download all deps without the real source.
+# This layer is only invalidated when pyproject.toml changes (~170s first
+# build, ~0s thereafter).
+RUN uv venv /app/.venv && \
+    mkdir -p questionnaire && \
+    echo "" > questionnaire/__init__.py && \
+    uv pip install --python /app/.venv/bin/python ".[analytics]" && \
+    rm -rf questionnaire
+
+# --- Source layer (fast re-install when only source changes) ---------------
 COPY questionnaire/ questionnaire/
 
-# Install core + analytics extras (no dev tools)
-RUN uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python -e ".[analytics]"
+# Re-install the package itself without touching already-cached deps (~2s).
+RUN uv pip install --python /app/.venv/bin/python --no-deps "."
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Data dir (SQLite DB + PII key mount point)
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 
