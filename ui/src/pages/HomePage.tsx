@@ -108,7 +108,7 @@ export default function HomePage() {
               rows={4}
               value={aiDesc}
               onChange={e => setAiDesc(e.target.value)}
-              placeholder="e.g. Employee satisfaction survey covering workload, team culture, and career growth opportunities"
+              placeholder="Describe your survey (e.g. Employee satisfaction covering workload, team culture, and career growth)"
               className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 focus:border-violet-500 focus:outline-none text-slate-800 text-sm resize-none placeholder:text-slate-400"
             />
 

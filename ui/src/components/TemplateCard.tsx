@@ -1,5 +1,16 @@
 import type { Template, TemplateStats } from '../types'
 
+const TYPE_LABELS: Record<string, string> = {
+  boolean: 'yes / no',
+  single_select: 'single choice',
+  multi_select: 'multiple choice',
+  free_text: 'free text',
+  number: 'number',
+  date: 'date',
+  rating: 'rating',
+  email: 'email',
+}
+
 const TYPE_COLORS: Record<string, string> = {
   boolean: 'bg-blue-100 text-blue-700',
   single_select: 'bg-indigo-100 text-indigo-700',
@@ -38,7 +49,7 @@ export default function TemplateCard({ template, stats, onStart, starting }: Pro
         <div className="flex flex-wrap gap-1.5 mb-4">
           {typeSet.map(t => (
             <span key={t} className={`text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_COLORS[t] ?? 'bg-gray-100 text-gray-600'}`}>
-              {t.replace('_', ' ')}
+              {TYPE_LABELS[t] ?? t.replace('_', ' ')}
             </span>
           ))}
         </div>
