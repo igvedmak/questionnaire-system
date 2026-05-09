@@ -1,4 +1,7 @@
 services:
+
+  # ── runtime ────────────────────────────────────────────────────────────────
+
   api:
     build: .
     ports:
@@ -7,21 +10,44 @@ services:
       - ./data:/app/data                   # SQLite DB + PII key persisted on host
       - hf_cache:/root/.cache/huggingface  # model cache (avoids re-download on restart)
     environment:
-      - QST_PII_KEY=${QST_PII_KEY:-}       # leave empty to auto-generate on first boot
-      - HF_TOKEN=${HF_TOKEN:-}             # optional: avoids HuggingFace rate-limit warnings
-      - QST_LLM_API_KEY=${QST_LLM_API_KEY:-}          # API key for chosen LLM provider
-      - QST_LLM_MODEL=${QST_LLM_MODEL:-anthropic/claude-opus-4-7}  # litellm model string
-      - QST_LLM_BASE_URL=${QST_LLM_BASE_URL:-}        # optional: for local/custom endpoints
+      - QST_PII_KEY=${QST_PII_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - QST_LLM_API_KEY=${QST_LLM_API_KEY:-}
+      - QST_LLM_MODEL=${QST_LLM_MODEL:-anthropic/claude-opus-4-7}
+      - QST_LLM_BASE_URL=${QST_LLM_BASE_URL:-}
 
   ui:
     build:
       context: ui
+      target: production
       args:
         VITE_API_URL: http://localhost:8000
     ports:
       - "3000:80"
     depends_on:
       - api
+
+  # ── test (docker compose --profile test run --rm <service>) ────────────────
+
+  api-test:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - QST_PII_KEY=${QST_PII_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - QST_LLM_API_KEY=${QST_LLM_API_KEY:-}
+      - QST_LLM_MODEL=${QST_LLM_MODEL:-anthropic/claude-opus-4-7}
+      - QST_LLM_BASE_URL=${QST_LLM_BASE_URL:-}
+    command: pytest
+    profiles: [test]
+
+  ui-test:
+    build:
+      context: ui
+      target: test
+    profiles: [test]
 
 volumes:
   hf_cache:

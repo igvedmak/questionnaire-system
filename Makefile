@@ -1,35 +1,67 @@
-# Zero-touch dev workflow.
+# ── Docker (no local tools required) ─────────────────────────────────────────
 #
-# Local dev:
-# `make install`       — create venv and install everything (analytics extra included).
-# `make verify`        — pytest (158 tests) + qst doctor (124 checks).
-# `make test`          — pytest only.
-# `make api`           — start the FastAPI server on :8000.
-# `make ui`            — start the Vite UI dev server on :5173 (needs `make api` running).
-# `make ui-install`    — install UI npm dependencies.
-# `make ui-build`      — production build of the UI to ui/dist/.
-# `make demo`          — seed templates + submit a sample questionnaire.
-# `make clean`         — wipe venv + DB + caches.
+#   make docker-up        — build images + start API (:8000) and UI (:3000)
+#   make docker-down      — stop and remove containers
+#   make docker-logs      — tail API logs
+#   make docker-build     — build images only (no start)
+#   make docker-test      — run Python test suite inside Docker (158 tests)
+#   make docker-test-ui   — run UI test suite inside Docker (101 tests)
+#   make docker-verify    — pytest + qst doctor (all-green gate)
+#   make docker-seed      — seed 6 demo templates into the running DB
 #
-# Docker:
-# `make docker-up`     — build images + start API (:8000) and UI (:3000).
-# `make docker-down`   — stop containers.
-# `make docker-logs`   — tail API logs.
-# `make docker-build`  — build images only.
-# Set QST_LLM_API_KEY=sk-ant-... in your shell or .env for AI features.
+# ── Local dev (requires Python 3.11+ and uv or python3-venv) ─────────────────
+#
+#   make install          — create .venv and install all extras
+#   make verify           — pytest + qst doctor
+#   make test             — pytest only
+#   make api              — FastAPI on :8000
+#   make ui               — Vite dev server on :5173
+#   make demo             — seed templates + submit a sample questionnaire
+#   make clean            — wipe venv + DB + caches
 
 PY    ?= python3
 VENV  ?= .venv
 BIN   := $(VENV)/bin
 QST   := $(BIN)/qst
 
-# Prefer uv if available (fast); fall back to stdlib venv + pip.
 UV := $(shell command -v uv 2>/dev/null)
 
-.PHONY: install test verify api ui ui-install ui-build demo clean help docker-build docker-up docker-down docker-logs
+.PHONY: install test verify api ui ui-install ui-build demo clean help \
+        docker-build docker-up docker-down docker-logs \
+        docker-test docker-test-ui docker-verify docker-seed
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | grep -v '^\.' | sort
+
+# ── Docker targets ────────────────────────────────────────────────────────────
+
+docker-up:
+	docker compose up -d --build
+	@echo "  API → http://localhost:8000/docs"
+	@echo "  UI  → http://localhost:3000"
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f api
+
+docker-build:
+	docker compose build
+
+docker-test:
+	docker compose --profile test run --rm api-test
+
+docker-test-ui:
+	docker compose --profile test run --rm ui-test
+
+docker-verify: docker-test
+	docker compose run --rm api qst doctor
+
+docker-seed:
+	docker compose run --rm api qst template seed
+
+# ── Local dev targets ─────────────────────────────────────────────────────────
 
 install:
 ifneq ($(UV),)
@@ -74,20 +106,6 @@ demo:
 	@echo "    qst list"
 	@echo "    qst list -i contact_method=Email -i symptoms=Fever"
 	@echo "    qst audit list"
-
-docker-build:
-	docker build -t questionnaire-engine .
-
-docker-up:
-	docker compose up -d --build
-	@echo "  API running at http://localhost:8000/docs"
-	@echo "  UI  running at http://localhost:3000"
-
-docker-down:
-	docker compose down
-
-docker-logs:
-	docker compose logs -f api
 
 clean:
 	rm -rf $(VENV) .pytest_cache **/__pycache__ data/db.sqlite data/db.sqlite-* data/.qst_pii.key ui/dist ui/.node_modules

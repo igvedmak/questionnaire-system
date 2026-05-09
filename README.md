@@ -29,8 +29,8 @@ toward a credible product foundation.
 | **API key auth** — set `QST_API_KEYS` to enable; `X-API-Key` header required for writes | `api/app.py` |
 | **CSV export** of filtered queries, streamed | `cli/query_cmd.py`, `/questionnaires.csv` |
 | **Semantic free-text clustering** (HDBSCAN over sentence-transformer embeddings) — optional `analytics` extra | `analytics/clustering.py` |
-| **AI template generation** — natural-language description → validated Template via Claude | `llm/generate.py` |
-| **AI response analysis** — streaming narrative report over submitted responses via Claude | `llm/analyze.py` |
+| **AI template generation** — natural-language description → validated Template via configurable LLM (litellm, 100+ providers) | `llm/generate.py` |
+| **AI response analysis** — streaming narrative report over submitted responses via configurable LLM | `llm/analyze.py` |
 | **Webhooks** — HMAC-signed HTTP callbacks for `questionnaire.submit` and `gdpr.delete` events | `persistence/sql_store.py`, `/webhooks` endpoints |
 | **Template duplication** — clone any template to a new id | `persistence/sql_store.py`, `/templates/{id}/duplicate` |
 | **Template stats** — submission counts and completion rate per template | `/templates/{id}/stats` |
@@ -46,84 +46,97 @@ toward a credible product foundation.
 
 ## Run
 
-Requires Python 3.11+.
+**Only prerequisite: [Docker](https://docs.docker.com/get-docker/) (Desktop or Engine).**
+No Python, Node, pip, or npm required on your machine.
 
-### Option A — Docker (recommended for a quick start)
-
-```bash
-cp .env.example .env          # set QST_PII_KEY and optional HF_TOKEN, QST_LLM_API_KEY
-make docker-up                # builds image + starts API at http://localhost:8000
-```
-
-Or without `make`:
+### Quickstart
 
 ```bash
-docker compose up -d
+cp .env.example .env    # edit if you want AI features (set QST_LLM_API_KEY)
+docker compose up -d    # builds images, starts API :8000 + UI :3000
 ```
+
+Open **http://localhost:3000** for the UI, or **http://localhost:8000/docs** for the API.
 
 Data (SQLite DB, PII key) is persisted in `./data/` on the host.
 HuggingFace model files are cached in a named Docker volume (`hf_cache`)
 so they aren't re-downloaded on restart.
 
-One-off commands via Docker:
+### All Docker commands
+
+| Command | What it does |
+|---|---|
+| `docker compose up -d` | Start API + UI in the background |
+| `docker compose down` | Stop and remove containers |
+| `docker compose logs -f api` | Tail API logs |
+| `docker compose run --rm api qst doctor` | 124-check self-test |
+| `docker compose run --rm api qst template seed` | Seed 6 demo templates |
+| `docker compose run --rm api qst audit verify` | Verify hash chain |
+| `make docker-test` | Run Python test suite (158 tests) inside Docker |
+| `make docker-test-ui` | Run UI test suite (101 tests) inside Docker |
+| `make docker-verify` | pytest + qst doctor — all-green gate |
+| `make docker-seed` | Seed demo templates into running DB |
+
+Or directly without `make`:
 
 ```bash
-docker compose run --rm api qst doctor          # 124-check self-test
-docker compose run --rm api qst template seed   # seed 6 demo templates
-docker compose run --rm api qst audit verify    # check hash chain
+docker compose --profile test run --rm api-test    # Python tests
+docker compose --profile test run --rm ui-test     # UI tests
 ```
 
-### Option B — local venv
+### AI features
+
+Set these in `.env` before `docker compose up`:
 
 ```bash
-make install               # creates .venv, installs core + dev + analytics extras
-source .venv/bin/activate  # put qst on PATH — required once per shell session
-make verify                # pytest (158 tests) + qst doctor (124 checks)
+# Anthropic Claude (default):
+QST_LLM_API_KEY=sk-ant-...
+QST_LLM_MODEL=anthropic/claude-opus-4-7
+
+# OpenAI:
+QST_LLM_API_KEY=sk-...
+QST_LLM_MODEL=gpt-4o
+
+# Google Gemini:
+QST_LLM_API_KEY=AIza...
+QST_LLM_MODEL=gemini/gemini-1.5-pro
+
+# Local Ollama (no key needed — Ollama must be running on the host):
+QST_LLM_MODEL=ollama/llama3
+QST_LLM_BASE_URL=http://host.docker.internal:11434
 ```
 
-> `make install` installs `qst` into `.venv/bin/` but does **not** activate the venv.
-> Run `source .venv/bin/activate` each new shell session, or invoke directly as `.venv/bin/qst`.
-
-Without `make`:
-
-```bash
-uv venv && uv pip install -e ".[dev,analytics]"
-# or without uv:
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev,analytics]"
-
-source .venv/bin/activate
-pytest && qst doctor
-```
-
-#### Optional extras
-
-| Extra | Installs | Enables |
-|---|---|---|
-| `analytics` | sentence-transformers, HDBSCAN, numpy, scikit-learn | Semantic clustering (`qst analytics cluster`, `/analytics/.../clusters`) |
-| `llm` | anthropic | AI template generation (`qst template ai-generate`) + AI analysis (`qst analytics ai-analyze`) |
-| `dev` | pytest, httpx | Test suite |
-
-```bash
-# All extras:
-pip install -e ".[dev,analytics,llm]"
-
-# LLM only:
-pip install -e ".[llm]"
-```
+Without `QST_LLM_API_KEY`, the engine runs fully; AI endpoints return 503.
 
 ### PII encryption key
 
-Zero setup needed locally — the engine generates a key on first use and persists
-it to `data/.qst_pii.key` (gitignored, `chmod 0600`). Set `QST_PII_KEY` from your
-secret manager in production. Generate one with:
+Zero setup needed — the engine auto-generates a Fernet key on first boot
+and persists it to `data/.qst_pii.key` (gitignored, `chmod 0600`).
+In production, set `QST_PII_KEY` from your secret manager instead.
+Generate a key with:
 
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+docker compose run --rm api python3 -c \
+  "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
+
+### Local dev (optional — for contributors)
+
+Requires Python 3.11+ and Node 20+.
+
+```bash
+make install               # creates .venv, installs all extras (uv preferred, falls back to venv)
+source .venv/bin/activate
+make verify                # pytest (158 tests) + qst doctor (124 checks)
+make api                   # FastAPI on :8000
+make ui                    # Vite dev server on :5173 (separate terminal)
+```
+
+> Ubuntu/Debian: run `sudo apt install python3.12-venv` before `make install` if you don't have `uv`.
 
 ### A 60-second tour
 
-Run these after `source .venv/bin/activate` (or prefix each with `docker compose run --rm api`):
+Run these with `docker compose run --rm api` (or locally after `source .venv/bin/activate`):
 
 ```bash
 qst doctor                           # 124-check self-test — exits 0 on green
@@ -167,7 +180,7 @@ qst api --port 8000                  # start HTTP API
 qst migrate
 ```
 
-#### AI-powered features (requires `pip install -e ".[llm]"` and `QST_LLM_API_KEY`)
+#### AI-powered features (set `QST_LLM_API_KEY` in `.env` — see [AI features](#ai-features) above)
 
 ```bash
 # Generate a template from a plain-English description:
@@ -211,7 +224,7 @@ make ui-build   # outputs to ui/dist/ — serve with any static host
 |---|---|
 | **Templates** (`/`) | Template library with stats; one-click start; **AI Generate modal** |
 | **Fill** (`/fill/:id`) | Dynamic questionnaire form — all 8 question types, live follow-up reveal, auto-save per answer, progress bar, submit |
-| **Responses** (`/responses`) | Paginated response table; filter by template or draft status; slide-over detail panel |
+| **Responses** (`/responses`) | Paginated response table; filter by template or draft status; slide-over detail panel; per-row actions (view, archive, delete); CSV export |
 
 All 8 question types have purpose-built inputs:
 - Boolean → Yes / No toggle buttons
@@ -260,8 +273,11 @@ Endpoints:
 | PUT | `/questionnaires/{id}/answers` | Bulk upsert answers |
 | DELETE | `/questionnaires/{id}/answers/{qid}` | Remove one answer (rejected with 409 after submit) |
 | POST | `/questionnaires/{id}/submit` | Lock the questionnaire |
+| POST | `/questionnaires/{id}/archive` | Soft-archive (sets `archived_at`) |
+| DELETE | `/questionnaires/{id}` | Hard-delete (audit-logged) |
 | POST | `/questionnaires/{id}/validate` | Validate without submitting |
 | GET | `/questionnaires.csv` | Streaming CSV of the filtered set |
+| GET | `/llm/config` | Active LLM provider name, model, and whether a key is configured |
 | GET | `/audit?since=<seq>` | Audit log entries |
 | POST | `/audit/verify` | Recompute the chain, 200 OK or 409 |
 | GET | `/respondents/{id}/export` | GDPR zip |
@@ -348,7 +364,7 @@ bash check_cli.sh               # 53 bash CLI end-to-end checks with full log ou
 | Interface | CLI only → CLI + FastAPI HTTP API + OpenAPI docs |
 | Auth | None → optional API key (`QST_API_KEYS`); `X-Actor` advisory header |
 | Webhooks | None → HMAC-signed HTTP callbacks for submit and GDPR delete events |
-| AI features | None → AI template generation + streaming response analysis (Claude, adaptive thinking) |
+| AI features | None → AI template generation + streaming response analysis (litellm, 100+ providers; adaptive thinking for Claude) |
 | Seed templates | 2 → **6** (medical, travel, HR onboarding, product feedback, event registration, customer support) |
 | Analytics | None → optional semantic clustering of free-text answers |
 | Tests | 44 → **158** |
@@ -407,12 +423,13 @@ encrypted at write, decrypted on read, and the ciphertext is never
 logged. Key rotation and KMS integration are documented next-step work.
 
 ### AI generation: retry loop with error feedback
-`generate_template` uses Claude with adaptive thinking and a strict JSON
-schema in the system prompt. On JSON parse failure or Pydantic validation
-error, the error is fed back into a follow-up message and Claude retries.
-After `max_retries` (default 2) the function raises a `RuntimeError` with
-the last error. This handles cases where the model adds markdown fences or
-minor schema deviations.
+`generate_template` uses litellm (supporting 100+ providers via a uniform
+interface) with a strict JSON schema in the system prompt. On JSON parse
+failure or Pydantic validation error, the error is fed back into a
+follow-up message and the model retries. After `max_retries` (default 2)
+the function raises a `RuntimeError` with the last error. This handles
+cases where the model adds markdown fences or minor schema deviations.
+For Claude models, adaptive thinking is enabled automatically.
 
 ### Filters on PII / non-select questions
 Includes/Excludes are restricted to single/multi-select at parse time —
@@ -436,8 +453,9 @@ error, not silently ignored.
    manager and don't rely on the file.
 6. **`QST_API_KEYS`** is optional. When unset, the API is open. When
    set (comma-separated), all write endpoints require `X-API-Key`.
-7. **`QST_LLM_API_KEY`** is required only for AI features. The engine
-   runs fully without it; AI endpoints return 503 when the key is absent.
+7. **`QST_LLM_API_KEY`** is required only for AI features (not needed for local models like Ollama). The engine
+   runs fully without it; AI endpoints return 503 when the key is absent. Set `QST_LLM_MODEL` to choose the
+   provider and model (default: `anthropic/claude-opus-4-7`).
 8. **The `analytics` extra** is opt-in. Without it, the
    `/analytics/.../clusters` endpoint returns 503.
 
