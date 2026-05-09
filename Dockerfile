@@ -1,8 +1,7 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 WORKDIR /app
 
-# Install uv
 RUN pip install --no-cache-dir uv
 
 # --- Dependency layer (cached until pyproject.toml changes) ---------------
@@ -28,6 +27,14 @@ ENV PATH="/app/.venv/bin:$PATH"
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 
-EXPOSE 8000
+# ── test stage ────────────────────────────────────────────────────────────────
+# Used by: docker compose --profile test run --rm api-test
+FROM base AS test
+RUN uv pip install --python /app/.venv/bin/python ".[dev]"
+COPY tests/ tests/
+CMD ["pytest"]
 
+# ── production stage ──────────────────────────────────────────────────────────
+FROM base
+EXPOSE 8000
 CMD ["qst", "api", "--host", "0.0.0.0", "--port", "8000"]
