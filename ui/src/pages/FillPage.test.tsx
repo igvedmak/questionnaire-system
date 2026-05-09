@@ -24,7 +24,7 @@ function setup() {
   return {
     user: userEvent.setup(),
     ...render(
-      <MemoryRouter initialEntries={['/fill/qn_1']}>
+      <MemoryRouter initialEntries={['/fill/qn_1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/fill/:questionnaireId" element={<FillPage />} />
         </Routes>

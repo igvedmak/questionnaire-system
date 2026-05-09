@@ -23,7 +23,8 @@ vi.mock('../api/client', () => ({ api: mockApi }))
 import HomePage from './HomePage'
 
 function setup() {
-  return { user: userEvent.setup(), ...render(<MemoryRouter><HomePage /></MemoryRouter>) }
+  const future = { v7_startTransition: true, v7_relativeSplatPath: true }
+  return { user: userEvent.setup(), ...render(<MemoryRouter future={future}><HomePage /></MemoryRouter>) }
 }
 
 beforeEach(() => {
