@@ -120,7 +120,10 @@ docker compose run --rm api python3 -c \
   "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-### Local dev (optional — for contributors)
+### Local dev (optional — only needed if you are editing the source code)
+
+> If you just want to run the app, `docker compose up -d` is all you need.
+> This section is for contributors who want hot-reload, a debugger, or to run tests without Docker.
 
 Requires Python 3.11+ and Node 20+.
 
