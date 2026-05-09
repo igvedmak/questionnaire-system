@@ -125,17 +125,15 @@ docker compose run --rm api python3 -c \
 > If you just want to run the app, `docker compose up -d` is all you need.
 > This section is for contributors who want hot-reload, a debugger, or to run tests without Docker.
 
-Requires Python 3.11+ and Node 20+.
+Requires Python 3.11+. No other prerequisites — `make install` auto-installs `uv` if it isn't on PATH.
 
 ```bash
-make install               # creates .venv, installs all extras (uv preferred, falls back to venv)
+make install               # installs uv if needed, creates .venv, installs all extras
 source .venv/bin/activate
 make verify                # pytest (158 tests) + qst doctor (124 checks)
 make api                   # FastAPI on :8000
 make ui                    # Vite dev server on :5173 (separate terminal)
 ```
-
-> Ubuntu/Debian: run `sudo apt install python3.12-venv` before `make install` if you don't have `uv`.
 
 ### A 60-second tour
 

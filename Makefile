@@ -9,7 +9,7 @@
 #   make docker-verify    — pytest + qst doctor (all-green gate)
 #   make docker-seed      — seed 6 demo templates into the running DB
 #
-# ── Local dev (requires Python 3.11+ and uv or python3-venv) ─────────────────
+# ── Local dev (requires Python 3.11+; uv is installed automatically if missing) ─
 #
 #   make install          — create .venv and install all extras
 #   make verify           — pytest + qst doctor
@@ -24,7 +24,8 @@ VENV  ?= .venv
 BIN   := $(VENV)/bin
 QST   := $(BIN)/qst
 
-UV := $(shell command -v uv 2>/dev/null)
+UV     := $(shell command -v uv 2>/dev/null)
+UV_BIN := $(HOME)/.local/bin/uv
 
 .PHONY: install test verify api ui ui-install ui-build demo clean help \
         docker-build docker-up docker-down docker-logs \
@@ -67,13 +68,17 @@ install:
 ifneq ($(UV),)
 	$(UV) venv $(VENV)
 	$(UV) pip install -e ".[dev,analytics,llm]"
+else ifneq ($(wildcard $(UV_BIN)),)
+	$(UV_BIN) venv $(VENV)
+	$(UV_BIN) pip install -e ".[dev,analytics,llm]"
 else
-	$(PY) -m venv $(VENV)
-	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -e ".[dev,analytics,llm]"
+	@echo "  uv not found — installing (no sudo required)..."
+	@curl -LsSf https://astral.sh/uv/install.sh | sh
+	$(UV_BIN) venv $(VENV)
+	$(UV_BIN) pip install -e ".[dev,analytics,llm]"
 endif
 	@echo
-	@echo "  installed. Try:  make verify"
+	@echo "  installed. Run: source .venv/bin/activate && make verify"
 
 test:
 	$(BIN)/pytest
