@@ -35,6 +35,7 @@ class Settings(BaseSettings):
         env_file=".env",
         extra="ignore",
         populate_by_name=True,
+        env_ignore_empty=True,  # treat QST_FOO= as unset → use field default
     )
 
 
